@@ -4,6 +4,7 @@ import { PredictionForm } from './components/PredictionForm'
 import { ResultPanel } from './components/ResultPanel'
 import { HistoryPanel } from './components/HistoryPanel'
 import { DisclaimerBanner } from './components/DisclaimerBanner'
+import { ResearchPanel } from './components/ResearchPanel'
 import { predict, type PredictionResult } from './lib/api'
 import { DEFAULT_VALUES, type FeatureValues } from './lib/features'
 import { supabase } from './lib/supabase'
@@ -127,99 +128,6 @@ export default function App() {
           )
         )}
       </main>
-    </div>
-  )
-}
-
-function ResearchPanel() {
-  return (
-    <div className="research-panel">
-      <section className="research-hero">
-        <div>
-          <h2>FetalyzeAI — uncertainty-aware CTG second reader</h2>
-          <p>
-            Research-stage decision support for fetal monitoring, combining risk stratification,
-            uncertainty estimation, factor influence ranking, and dataset-aware evaluation.
-          </p>
-        </div>
-        <div className="research-hero__card">
-          <strong>Clinical safety notice</strong>
-          <span>Not a diagnosis. Not a treatment recommendation. Requires clinician review.</span>
-        </div>
-      </section>
-
-      <div className="research-grid">
-        <section className="research-card">
-          <h3>How it works</h3>
-          <ol>
-            <li>CTG feature input and signal quality check</li>
-            <li>Risk prediction with uncertainty and reserve scoring</li>
-            <li>SHAP-style factor ranking and explanation</li>
-            <li>Clinician review with escalation guidance</li>
-          </ol>
-        </section>
-
-        <section className="research-card">
-          <h3>Core model outputs</h3>
-          <ul>
-            <li>Risk class: Normal / Suspect / Pathological</li>
-            <li>Confidence and entropy-based uncertainty</li>
-            <li>Fetal reserve score</li>
-            <li>Top factor influence ranking</li>
-            <li>Action guidance for bedside review</li>
-          </ul>
-        </section>
-
-        <section className="research-card">
-          <h3>Model evaluation focus</h3>
-          <ul>
-            <li>High-risk recall and false negative rate</li>
-            <li>Macro-F1 and balanced accuracy</li>
-            <li>AUROC and AUPRC</li>
-            <li>Calibration, ECE, and Brier score</li>
-            <li>Cross-dataset generalization</li>
-            <li>Fairness across risk classes</li>
-          </ul>
-        </section>
-
-        <section className="research-card">
-          <h3>Datasets used</h3>
-          <ul>
-            <li>CTGDL waveform development data</li>
-            <li>CTU-UHB / CTU-CHB clinical benchmark</li>
-          </ul>
-        </section>
-
-        <section className="research-card research-card--wide">
-          <h3>Evaluation metrics for fairness</h3>
-          <div className="metric-grid">
-            <Metric label="Sensitivity" value="High-risk cases detected" />
-            <Metric label="Specificity" value="Low false alarms" />
-            <Metric label="Macro-F1" value="Balanced across all classes" />
-            <Metric label="Balanced Accuracy" value="Handles class imbalance" />
-            <Metric label="Calibration" value="Probability reliability" />
-            <Metric label="Subgroup parity" value="Consistent performance" />
-          </div>
-        </section>
-
-        <section className="research-card research-card--wide">
-          <h3>Clinical safety and roadmap</h3>
-          <p>
-            FetalyzeAI is designed to support review of borderline patterns, not to replace bedside
-            judgement. The next step is clinician-annotated validation on external CTG cohorts and
-            prospective silent testing.
-          </p>
-        </section>
-      </div>
-    </div>
-  )
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="metric-pill">
-      <strong>{label}</strong>
-      <span>{value}</span>
     </div>
   )
 }

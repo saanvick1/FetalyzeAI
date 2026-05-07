@@ -1,0 +1,285 @@
+{
+  "dataset": {
+    "name": "CTU-CHB Intrapartum CTG Database (Local + PhysioNet)",
+    "records_total": 552,
+    "records_used": 552,
+    "n_safe": 127,
+    "n_atrisk": 425,
+    "ph_available": 552,
+    "acidosis": 40,
+    "borderline": 65,
+    "normal_ph": 447,
+    "ph_mean": 7.23,
+    "ph_std": 0.105
+  },
+  "holdout": {
+    "n_test": 111,
+    "accuracy": 0.964,
+    "balanced_accuracy": 0.9765,
+    "f1": 0.9759,
+    "precision": 1.0,
+    "sensitivity": 0.9529,
+    "specificity": 1.0,
+    "auroc": 0.9701,
+    "auprc": 0.9924,
+    "tn": 26,
+    "fp": 0,
+    "fn": 4,
+    "tp": 81
+  },
+  "cv5": {
+    "fold_f1": [
+      0.9581,
+      0.9634,
+      0.9576,
+      0.982,
+      0.9941
+    ],
+    "fold_auc": [
+      0.9738,
+      0.9878,
+      0.9774,
+      0.9826,
+      0.9925
+    ],
+    "fold_sens": [
+      0.9412,
+      0.9294,
+      0.9294,
+      0.9647,
+      0.9882
+    ],
+    "fold_spec": [
+      0.9231,
+      1.0,
+      0.96,
+      1.0,
+      1.0
+    ],
+    "fold_bal": [
+      0.9321,
+      0.9647,
+      0.9447,
+      0.9824,
+      0.9941
+    ],
+    "mean_f1": 0.971,
+    "std_f1": 0.0163,
+    "mean_auc": 0.9828,
+    "std_auc": 0.0076,
+    "mean_sens": 0.9506,
+    "std_sens": 0.0255,
+    "mean_spec": 0.9766,
+    "std_spec": 0.0346,
+    "mean_bal": 0.9636,
+    "std_bal": 0.0257
+  },
+  "feature_importance": [
+    {
+      "feature": "decel_burden",
+      "importance": 0.5429
+    },
+    {
+      "feature": "n_decels",
+      "importance": 0.2538
+    },
+    {
+      "feature": "decels_per_30min",
+      "importance": 0.0354
+    },
+    {
+      "feature": "max_decel_depth",
+      "importance": 0.0201
+    },
+    {
+      "feature": "std_fhr",
+      "importance": 0.0181
+    },
+    {
+      "feature": "mean_decel_depth",
+      "importance": 0.0174
+    },
+    {
+      "feature": "ltv",
+      "importance": 0.0131
+    },
+    {
+      "feature": "mean_fhr",
+      "importance": 0.0106
+    },
+    {
+      "feature": "n_accels",
+      "importance": 0.0106
+    },
+    {
+      "feature": "tachycardia_frac",
+      "importance": 0.01
+    }
+  ],
+  "ablation": [
+    {
+      "group": "All features (full model)",
+      "auc_mean": 0.9828,
+      "auc_std": 0.0068,
+      "n_feats": 18
+    },
+    {
+      "group": "Without FHR baseline (mean/baseline/std)",
+      "auc_mean": 0.9827,
+      "auc_std": 0.0065,
+      "n_feats": 15
+    },
+    {
+      "group": "Without STV/LTV variability",
+      "auc_mean": 0.9836,
+      "auc_std": 0.0061,
+      "n_feats": 16
+    },
+    {
+      "group": "Without decelerations",
+      "auc_mean": 0.96,
+      "auc_std": 0.014,
+      "n_feats": 12
+    },
+    {
+      "group": "Without accelerations",
+      "auc_mean": 0.9827,
+      "auc_std": 0.0069,
+      "n_feats": 16
+    },
+    {
+      "group": "Without contraction features",
+      "auc_mean": 0.9841,
+      "auc_std": 0.0071,
+      "n_feats": 16
+    },
+    {
+      "group": "Without reserve score",
+      "auc_mean": 0.983,
+      "auc_std": 0.0059,
+      "n_feats": 16
+    },
+    {
+      "group": "FHR features only (no UC)",
+      "auc_mean": 0.9841,
+      "auc_std": 0.0071,
+      "n_feats": 16
+    }
+  ],
+  "ph_histogram": [
+    {
+      "bin": 6.7,
+      "count": 0
+    },
+    {
+      "bin": 6.75,
+      "count": 0
+    },
+    {
+      "bin": 6.8,
+      "count": 0
+    },
+    {
+      "bin": 6.85,
+      "count": 2
+    },
+    {
+      "bin": 6.9,
+      "count": 6
+    },
+    {
+      "bin": 6.95,
+      "count": 12
+    },
+    {
+      "bin": 7.0,
+      "count": 20
+    },
+    {
+      "bin": 7.05,
+      "count": 16
+    },
+    {
+      "bin": 7.1,
+      "count": 49
+    },
+    {
+      "bin": 7.15,
+      "count": 72
+    },
+    {
+      "bin": 7.2,
+      "count": 94
+    },
+    {
+      "bin": 7.25,
+      "count": 122
+    },
+    {
+      "bin": 7.3,
+      "count": 99
+    },
+    {
+      "bin": 7.35,
+      "count": 49
+    },
+    {
+      "bin": 7.4,
+      "count": 9
+    },
+    {
+      "bin": 7.45,
+      "count": 2
+    },
+    {
+      "bin": 7.5,
+      "count": 0
+    }
+  ],
+  "stv_by_ph": [
+    {
+      "ph_bucket": "Acidosis\n<7.05",
+      "stv_mean": 0.817,
+      "stv_std": 0.259,
+      "count": 44
+    },
+    {
+      "ph_bucket": "Borderline\n7.05-7.15",
+      "stv_mean": 0.808,
+      "stv_std": 0.221,
+      "count": 69
+    },
+    {
+      "ph_bucket": "Normal\n7.15-7.30",
+      "stv_mean": 0.755,
+      "stv_std": 0.209,
+      "count": 303
+    },
+    {
+      "ph_bucket": "High Normal\n>7.30",
+      "stv_mean": 0.712,
+      "stv_std": 0.211,
+      "count": 136
+    }
+  ],
+  "feature_names": [
+    "baseline_fhr",
+    "mean_fhr",
+    "std_fhr",
+    "stv",
+    "ltv",
+    "tachycardia_frac",
+    "bradycardia_frac",
+    "n_decels",
+    "decels_per_30min",
+    "mean_decel_depth",
+    "max_decel_depth",
+    "mean_decel_dur_s",
+    "n_accels",
+    "accels_per_30min",
+    "n_contractions",
+    "contractions_per_10min",
+    "fetal_reserve_score",
+    "decel_burden"
+  ]
+}
