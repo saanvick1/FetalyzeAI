@@ -735,13 +735,14 @@ for m in model_names:
             'auc': roc_auc_score(results[m]['targets'], results[m]['probs'], multi_class='ovr', average='macro')
         }
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "📊 Executive Summary", 
-    "🔮 Interactive Prediction", 
-    "📈 Data Analysis & Visualizations", 
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    "📊 Executive Summary",
+    "🔮 Interactive Prediction",
+    "📈 Data Analysis & Visualizations",
     "🏆 Model Comparison & Results",
     "📐 Statistical Validation",
-    "🔬 Additional Changes"
+    "🔬 Additional Changes",
+    "🗄️ CTGDL Multi-Source Dataset"
 ])
 
 with tab1:
@@ -4981,6 +4982,585 @@ with tab6:
         Clinical decisions should never be based solely on automated classifications.</p>
     </div>
     """, unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 7 — CTGDL MULTI-SOURCE DATASET EXPLORER
+# ─────────────────────────────────────────────────────────────────────────────
+
+with tab7:
+    st.header("CTGDL Multi-Source CTG Dataset")
+    st.markdown("""
+    <div style="background:#f0f7ff;padding:14px 18px;border-radius:8px;border-left:4px solid #2980b9;margin-bottom:16px;">
+    <p style="color:#1a3a5c;margin:0;font-size:0.97em;">
+    <strong>CTGDL</strong> integrates three complementary intrapartum CTG datasets into a single
+    standardised corpus — <strong>984 recordings · 2,444 hours · 4 Hz</strong>.
+    This tab provides dataset exploration, signal-level clinical feature analysis,
+    the Fetal Reserve Score, Deceleration Burden Index, and Contraction Stress Response
+    as described in Fridman et al. (2025) SSRN 6027919.
+    </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Dataset provenance cards ──────────────────────────────────────────────
+    st.subheader("Dataset Sources")
+    src_cols = st.columns(3)
+
+    src_meta = [
+        {
+            "name": "CTU-UHB",
+            "full": "CTU-CHB Intrapartum CTG Database",
+            "n": 552,
+            "hours": "~828 h",
+            "license": "ODC-BY-1.0",
+            "url": "https://physionet.org/content/ctu-uhb-ctgdb/1.0.0/",
+            "citation": "Chudáček et al. (2014) BMC Pregnancy and Childbirth 14:16",
+            "outcomes": "pH, Base Deficit, Apgar 1 & 5",
+            "signals": "FHR + UC @ 4 Hz, up to 90 min before delivery",
+            "color": "#e8f4fd",
+            "border": "#2980b9",
+        },
+        {
+            "name": "FHRMA",
+            "full": "Fetal Heart Rate Morphological Analysis Toolbox",
+            "n": 135,
+            "hours": "~45 h",
+            "license": "GPL-3.0",
+            "url": "https://www.mathworks.com/matlabcentral/fileexchange/115890",
+            "citation": "FHRMA Toolbox, MathWorks File Exchange",
+            "outcomes": "Expert morphological annotations",
+            "signals": "FHR + UC; baseline, accelerations, decelerations annotated",
+            "color": "#eafaf1",
+            "border": "#27ae60",
+        },
+        {
+            "name": "SPAM / CTG Challenge 2017",
+            "full": "SPaM Workshop CTG Challenge 2017",
+            "n": 297,
+            "hours": "~297 h",
+            "license": "Data Use Agreement",
+            "url": "https://zenodo.org/records/19510407",
+            "citation": "2nd SPaM Workshop, Oxford (2017)",
+            "outcomes": "Signal quality, fetal stress challenge labels",
+            "signals": "Long-duration FHR + UC recordings",
+            "color": "#fef9e7",
+            "border": "#f39c12",
+        },
+    ]
+
+    for col, meta in zip(src_cols, src_meta):
+        with col:
+            st.markdown(f"""
+            <div style="background:{meta['color']};border:1px solid {meta['border']};
+                        border-radius:8px;padding:14px;height:100%;">
+              <h4 style="color:#1a1a1a;margin:0 0 6px 0;">{meta['name']}</h4>
+              <p style="color:#444;font-size:0.82em;margin:0 0 8px 0;">{meta['full']}</p>
+              <table style="width:100%;font-size:0.8em;border-collapse:collapse;">
+                <tr><td style="color:#666;padding:2px 0;">Recordings</td>
+                    <td style="color:#1a1a1a;font-weight:600;">{meta['n']}</td></tr>
+                <tr><td style="color:#666;padding:2px 0;">Duration</td>
+                    <td style="color:#1a1a1a;">{meta['hours']}</td></tr>
+                <tr><td style="color:#666;padding:2px 0;">Signals</td>
+                    <td style="color:#1a1a1a;">{meta['signals']}</td></tr>
+                <tr><td style="color:#666;padding:2px 0;">Outcomes</td>
+                    <td style="color:#1a1a1a;">{meta['outcomes']}</td></tr>
+                <tr><td style="color:#666;padding:2px 0;">License</td>
+                    <td style="color:#1a1a1a;">{meta['license']}</td></tr>
+              </table>
+              <p style="color:#888;font-size:0.75em;margin:8px 0 4px 0;">{meta['citation']}</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── Load CTGDL (with caching) ─────────────────────────────────────────────
+    @st.cache_data(show_spinner=False)
+    def load_ctgdl_records(n_per_source: int = 50) -> tuple:
+        """Load CTGDL records. Falls back to synthetic if real data unavailable."""
+        try:
+            from ctgdl_loader import CTGDLDataset
+            dataset = CTGDLDataset(
+                max_per_source=n_per_source,
+                force_synthetic=False,
+                verbose=False,
+            ).load()
+            return dataset.records, dataset.load_summary, dataset.stats()
+        except Exception as exc:
+            return [], {}, {"error": str(exc)}
+
+    @st.cache_data(show_spinner=False)
+    def load_ctgdl_features(n_per_source: int = 50) -> pd.DataFrame:
+        """Extract features from CTGDL records."""
+        try:
+            from ctgdl_loader import CTGDLDataset
+            from ctgdl_features import extract_features_batch
+            dataset = CTGDLDataset(max_per_source=n_per_source, force_synthetic=False, verbose=False).load()
+            return extract_features_batch(dataset.records)
+        except Exception as exc:
+            return pd.DataFrame({"error": [str(exc)]})
+
+    with st.spinner("Loading CTGDL dataset (may use synthetic data if real datasets unavailable)..."):
+        records, load_summary, ctgdl_stats = load_ctgdl_records(50)
+        feat_df = load_ctgdl_features(50)
+
+    # ── Load status banner ────────────────────────────────────────────────────
+    if load_summary:
+        banner_parts = []
+        for src, info in load_summary.items():
+            method_color = "#27ae60" if "Zenodo" in info.get("method", "") or "WFDB" in info.get("method", "") else "#e67e22"
+            banner_parts.append(
+                f"<span style='background:{method_color};color:white;padding:2px 8px;"
+                f"border-radius:4px;font-size:0.8em;margin-right:6px;'>"
+                f"{src} — {info.get('count',0)} records ({info.get('method','?')})</span>"
+            )
+        st.markdown(
+            "<div style='margin-bottom:12px;'>" + "".join(banner_parts) + "</div>",
+            unsafe_allow_html=True
+        )
+
+        if any("synthetic" in info.get("method", "") for info in load_summary.values()):
+            st.info(
+                "One or more sources are using **synthetic data** (real datasets not downloaded). "
+                "Synthetic records are physiologically plausible but are clearly labelled. "
+                "To load real data, install `wfdb` and ensure network access to PhysioNet / Zenodo."
+            )
+
+    # ── Summary statistics ────────────────────────────────────────────────────
+    st.subheader("Dataset Statistics")
+
+    n_total = ctgdl_stats.get("n_records", 0)
+    total_h = ctgdl_stats.get("total_hours", 0)
+    mean_q  = ctgdl_stats.get("mean_signal_quality", 0)
+    ph_avail = ctgdl_stats.get("ph_available", 0)
+    mean_ph  = ctgdl_stats.get("mean_ph", None)
+
+    stat_cols = st.columns(5)
+    stat_values = [
+        ("Total Records", f"{n_total}"),
+        ("Total Hours", f"{total_h:.1f} h"),
+        ("Mean Quality", f"{mean_q:.1%}"),
+        ("pH Available", f"{ph_avail}"),
+        ("Mean pH", f"{mean_ph:.3f}" if mean_ph else "N/A"),
+    ]
+    for col, (label, value) in zip(stat_cols, stat_values):
+        with col:
+            st.metric(label, value)
+
+    # ── Metadata table ────────────────────────────────────────────────────────
+    if records:
+        st.subheader("Record Metadata")
+        from ctgdl_loader import CTGDLDataset
+        meta_df = pd.DataFrame([r.to_dict() for r in records])
+        # Show subset of columns in nice order
+        show_cols = [c for c in [
+            "record_id", "source", "duration_min", "signal_quality",
+            "ph", "ph_label", "base_deficit", "apgar1", "apgar5"
+        ] if c in meta_df.columns]
+        st.dataframe(meta_df[show_cols].head(60), use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # ── Signal viewer ─────────────────────────────────────────────────────────
+    st.subheader("CTG Signal Viewer")
+    st.caption(
+        "Select a recording to view its raw FHR and UC signals. "
+        "NaN gaps are shown as signal breaks (not silently imputed)."
+    )
+
+    if records:
+        record_ids = [r.record_id for r in records]
+        selected_id = st.selectbox("Select recording", record_ids, key="ctg_signal_viewer")
+        sel_rec = next((r for r in records if r.record_id == selected_id), None)
+
+        if sel_rec is not None:
+            col_info, col_plot = st.columns([1, 3])
+
+            with col_info:
+                st.markdown("**Recording info**")
+                st.write(f"Source: **{sel_rec.source}**")
+                st.write(f"Duration: **{sel_rec.duration_min:.1f} min**")
+                st.write(f"Signal quality: **{sel_rec.signal_quality:.1%}**")
+                if not np.isnan(sel_rec.ph):
+                    ph_color = "#e74c3c" if sel_rec.ph < 7.05 else "#f39c12" if sel_rec.ph < 7.15 else "#27ae60"
+                    st.markdown(
+                        f"pH: <span style='color:{ph_color};font-weight:700;'>{sel_rec.ph:.3f} ({sel_rec.ph_label})</span>",
+                        unsafe_allow_html=True
+                    )
+                if not np.isnan(sel_rec.apgar1):
+                    st.write(f"Apgar 1 min: **{int(sel_rec.apgar1)}**")
+                if not np.isnan(sel_rec.apgar5):
+                    st.write(f"Apgar 5 min: **{int(sel_rec.apgar5)}**")
+
+                # Feature summary for this record
+                if not feat_df.empty and "record_id" in feat_df.columns:
+                    rec_feat = feat_df[feat_df["record_id"] == selected_id]
+                    if not rec_feat.empty:
+                        rf = rec_feat.iloc[0]
+                        st.markdown("---")
+                        st.markdown("**Clinical features**")
+                        for fname, label in [
+                            ("baseline_fhr", "Baseline FHR"),
+                            ("stv", "STV"),
+                            ("ltv", "LTV"),
+                            ("n_decels", "Decelerations"),
+                            ("n_accels", "Accelerations"),
+                            ("n_late_decels", "Late decels"),
+                            ("deceleration_burden_index", "DBI"),
+                            ("fetal_reserve_score", "Reserve score"),
+                        ]:
+                            if fname in rf and not (isinstance(rf[fname], float) and np.isnan(rf[fname])):
+                                val = rf[fname]
+                                fmt = f"{val:.1f}" if isinstance(val, float) else str(val)
+                                st.write(f"{label}: **{fmt}**")
+
+            with col_plot:
+                t = np.arange(len(sel_rec.fhr)) / (sel_rec.fs * 60)  # minutes
+
+                fig_sig, (ax_fhr, ax_uc) = plt.subplots(2, 1, figsize=(12, 5), sharex=True)
+                fig_sig.patch.set_facecolor("white")
+
+                # FHR
+                ax_fhr.plot(t, sel_rec.fhr, color="#2980b9", linewidth=0.8, label="FHR")
+                ax_fhr.axhline(120, color="#27ae60", linestyle="--", linewidth=0.7, alpha=0.6, label="Normal low")
+                ax_fhr.axhline(160, color="#e74c3c", linestyle="--", linewidth=0.7, alpha=0.6, label="Normal high")
+                ax_fhr.set_ylabel("FHR (bpm)", fontsize=10)
+                ax_fhr.set_ylim(50, 210)
+                ax_fhr.legend(fontsize=8, loc="upper right")
+                ax_fhr.set_facecolor("#f8f9fa")
+                ax_fhr.grid(True, alpha=0.3)
+                ax_fhr.set_title(f"Recording {selected_id} — {sel_rec.source}", fontsize=11, fontweight="bold")
+
+                # UC
+                if sel_rec.uc is not None and not np.all(np.isnan(sel_rec.uc)):
+                    ax_uc.fill_between(t, 0, np.where(np.isnan(sel_rec.uc), 0, sel_rec.uc),
+                                       color="#e67e22", alpha=0.5, label="UC")
+                    ax_uc.plot(t, np.where(np.isnan(sel_rec.uc), np.nan, sel_rec.uc),
+                               color="#d35400", linewidth=0.8)
+                ax_uc.set_ylabel("UC (mmHg)", fontsize=10)
+                ax_uc.set_xlabel("Time (min)", fontsize=10)
+                ax_uc.set_facecolor("#f8f9fa")
+                ax_uc.grid(True, alpha=0.3)
+                plt.tight_layout()
+                st.pyplot(fig_sig)
+                plt.close(fig_sig)
+
+    st.markdown("---")
+
+    # ── Feature analysis ──────────────────────────────────────────────────────
+    st.subheader("Extracted Clinical Features")
+    st.caption(
+        "Features computed from raw FHR + UC signals for each recording. "
+        "These are the same feature categories used in the FetalyzeAI v2 architecture."
+    )
+
+    if not feat_df.empty and "error" not in feat_df.columns:
+        num_feat_cols = [c for c in feat_df.columns if feat_df[c].dtype in [np.float64, np.float32, np.int64]]
+        display_feat_cols = [c for c in [
+            "source", "duration_min", "signal_quality", "missing_fhr",
+            "baseline_fhr", "stv", "ltv",
+            "n_decels", "n_accels", "n_late_decels",
+            "deceleration_burden_index", "fetal_reserve_score",
+            "n_contractions", "decel_after_contraction_frac",
+            "ph", "ph_label",
+        ] if c in feat_df.columns]
+
+        st.dataframe(feat_df[display_feat_cols].head(60), use_container_width=True, hide_index=True)
+
+        # ── Feature distributions by source ──────────────────────────────────
+        st.markdown("#### Feature Distributions by Source")
+        feat_plot_options = [c for c in [
+            "fetal_reserve_score", "deceleration_burden_index",
+            "stv", "ltv", "baseline_fhr", "n_decels", "n_accels",
+            "signal_quality", "decel_after_contraction_frac",
+        ] if c in feat_df.columns]
+        selected_feat_plot = st.selectbox(
+            "Feature to plot", feat_plot_options,
+            index=0, key="ctgdl_feat_dist"
+        )
+
+        fig_dist, ax_dist = plt.subplots(figsize=(9, 4))
+        fig_dist.patch.set_facecolor("white")
+        source_palette = {"CTU-UHB": "#2980b9", "FHRMA": "#27ae60", "SPAM": "#e67e22",
+                          "CTU-UHB (synthetic)": "#5dade2", "FHRMA (synthetic)": "#52be80",
+                          "SPAM (synthetic)": "#f0b27a"}
+
+        for source_name, group in feat_df.groupby("source"):
+            vals = group[selected_feat_plot].dropna()
+            if len(vals) > 1:
+                color = source_palette.get(source_name, "#888")
+                ax_dist.hist(vals, bins=20, alpha=0.55, label=source_name, color=color, edgecolor="white")
+
+        ax_dist.set_xlabel(selected_feat_plot.replace("_", " ").title(), fontsize=11)
+        ax_dist.set_ylabel("Count", fontsize=11)
+        ax_dist.set_title(f"Distribution of {selected_feat_plot.replace('_', ' ').title()} by Source", fontsize=12)
+        ax_dist.legend(fontsize=9)
+        ax_dist.set_facecolor("#f8f9fa")
+        ax_dist.grid(True, axis="y", alpha=0.3)
+        plt.tight_layout()
+        st.pyplot(fig_dist)
+        plt.close(fig_dist)
+
+    st.markdown("---")
+
+    # ── Fetal Reserve Score explorer ──────────────────────────────────────────
+    st.subheader("Fetal Reserve Score")
+    st.markdown("""
+    <div style="background:#f0f7ff;padding:12px 16px;border-radius:6px;margin-bottom:12px;">
+    <p style="color:#1a3a5c;margin:0;font-size:0.9em;">
+    The <strong>Fetal Reserve Score (FRS)</strong> is a 0–100 composite score estimating how well the fetus
+    tolerates labour stress. It combines baseline FHR stability, short- and long-term variability,
+    accelerations, deceleration burden, and contraction stress response.
+    Higher scores indicate better reserve; scores below 40 warrant clinical review.
+    </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if not feat_df.empty and "fetal_reserve_score" in feat_df.columns:
+        frs_col, frs_hist_col = st.columns([1, 2])
+
+        with frs_col:
+            frs_vals = feat_df["fetal_reserve_score"].dropna()
+            st.metric("Mean FRS", f"{frs_vals.mean():.1f} / 100")
+            st.metric("Median FRS", f"{frs_vals.median():.1f} / 100")
+            st.metric("< 40 (low reserve)", f"{(frs_vals < 40).sum()} records ({(frs_vals < 40).mean():.0%})")
+            st.metric("≥ 70 (good reserve)", f"{(frs_vals >= 70).sum()} records ({(frs_vals >= 70).mean():.0%})")
+
+        with frs_hist_col:
+            fig_frs, ax_frs = plt.subplots(figsize=(8, 4))
+            fig_frs.patch.set_facecolor("white")
+            ax_frs.hist(frs_vals, bins=25, color="#2980b9", edgecolor="white", alpha=0.8)
+            ax_frs.axvline(40, color="#e74c3c", linestyle="--", linewidth=1.5, label="Low reserve threshold (40)")
+            ax_frs.axvline(70, color="#27ae60", linestyle="--", linewidth=1.5, label="Good reserve threshold (70)")
+            ax_frs.set_xlabel("Fetal Reserve Score", fontsize=11)
+            ax_frs.set_ylabel("Count", fontsize=11)
+            ax_frs.set_title("Fetal Reserve Score Distribution", fontsize=12)
+            ax_frs.legend(fontsize=9)
+            ax_frs.set_facecolor("#f8f9fa")
+            ax_frs.grid(True, axis="y", alpha=0.3)
+            plt.tight_layout()
+            st.pyplot(fig_frs)
+            plt.close(fig_frs)
+
+        # FRS vs pH scatter (if available)
+        if "ph" in feat_df.columns:
+            ph_frs = feat_df[["fetal_reserve_score", "ph", "source"]].dropna(subset=["fetal_reserve_score", "ph"])
+            if len(ph_frs) > 3:
+                st.markdown("#### Fetal Reserve Score vs. Cord Blood pH")
+                fig_scatter, ax_sc = plt.subplots(figsize=(8, 4))
+                fig_scatter.patch.set_facecolor("white")
+                source_palette = {"CTU-UHB": "#2980b9", "CTU-UHB (synthetic)": "#5dade2",
+                                   "FHRMA": "#27ae60", "FHRMA (synthetic)": "#52be80",
+                                   "SPAM": "#e67e22", "SPAM (synthetic)": "#f0b27a"}
+                for src, grp in ph_frs.groupby("source"):
+                    ax_sc.scatter(grp["fetal_reserve_score"], grp["ph"],
+                                  c=source_palette.get(src, "#888"), label=src, alpha=0.6, s=30)
+                ax_sc.axhline(7.05, color="#e74c3c", linestyle="--", linewidth=1.2, label="pH 7.05 (acidosis)")
+                ax_sc.axhline(7.15, color="#f39c12", linestyle="--", linewidth=1.2, label="pH 7.15 (borderline)")
+                ax_sc.set_xlabel("Fetal Reserve Score", fontsize=11)
+                ax_sc.set_ylabel("Umbilical Artery pH", fontsize=11)
+                ax_sc.set_title("FRS vs. Cord Blood pH", fontsize=12)
+                ax_sc.legend(fontsize=8)
+                ax_sc.set_facecolor("#f8f9fa")
+                ax_sc.grid(True, alpha=0.3)
+                plt.tight_layout()
+                st.pyplot(fig_scatter)
+                plt.close(fig_scatter)
+
+    st.markdown("---")
+
+    # ── Deceleration Burden Index ─────────────────────────────────────────────
+    st.subheader("Deceleration Burden Index")
+    st.markdown("""
+    <div style="background:#fff8e7;padding:12px 16px;border-radius:6px;margin-bottom:12px;">
+    <p style="color:#5d4000;margin:0;font-size:0.9em;">
+    <strong>Deceleration Burden Index (DBI)</strong> = Σ (depth × duration × recurrence weight).
+    A rising DBI over time is a clinically meaningful warning sign — it reflects not just whether
+    decelerations are present, but how severe and frequent they are. Late and prolonged decelerations
+    carry additional clinical weight in the FetalyzeAI scoring.
+    </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if not feat_df.empty and "deceleration_burden_index" in feat_df.columns:
+        dbi_vals = feat_df["deceleration_burden_index"].dropna()
+        dbi_c1, dbi_c2, dbi_c3 = st.columns(3)
+        with dbi_c1:
+            st.metric("Mean DBI", f"{dbi_vals.mean():.1f}")
+        with dbi_c2:
+            st.metric("Max DBI", f"{dbi_vals.max():.1f}")
+        with dbi_c3:
+            high_dbi = (dbi_vals > dbi_vals.quantile(0.75)).sum()
+            st.metric("High DBI (>Q3)", f"{high_dbi} records")
+
+        fig_dbi, ax_dbi = plt.subplots(figsize=(8, 3.5))
+        fig_dbi.patch.set_facecolor("white")
+        ax_dbi.hist(dbi_vals, bins=30, color="#e67e22", edgecolor="white", alpha=0.85)
+        q75 = float(dbi_vals.quantile(0.75))
+        ax_dbi.axvline(q75, color="#e74c3c", linestyle="--", linewidth=1.5, label=f"Q3 = {q75:.1f}")
+        ax_dbi.set_xlabel("Deceleration Burden Index", fontsize=11)
+        ax_dbi.set_ylabel("Count", fontsize=11)
+        ax_dbi.set_title("Deceleration Burden Index Distribution", fontsize=12)
+        ax_dbi.legend(fontsize=9)
+        ax_dbi.set_facecolor("#f8f9fa")
+        ax_dbi.grid(True, axis="y", alpha=0.3)
+        plt.tight_layout()
+        st.pyplot(fig_dbi)
+        plt.close(fig_dbi)
+
+    st.markdown("---")
+
+    # ── Contraction Stress Response ───────────────────────────────────────────
+    st.subheader("Contraction Stress Response")
+    st.markdown("""
+    <div style="background:#f0faf0;padding:12px 16px;border-radius:6px;margin-bottom:12px;">
+    <p style="color:#1a4a1a;margin:0;font-size:0.9em;">
+    For each contraction, FetalyzeAI measures whether a deceleration followed, how deep it was,
+    how long recovery took, and whether recovery is getting slower over time.
+    A rising fraction of decelerations after contractions (especially late decelerations)
+    is associated with reduced fetal tolerance to labour.
+    </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if not feat_df.empty and "decel_after_contraction_frac" in feat_df.columns:
+        csr_vals = feat_df["decel_after_contraction_frac"].dropna()
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.metric("Mean decel-after-contraction", f"{csr_vals.mean():.1%}")
+        with c2:
+            late_sum = int(feat_df["late_decel_after_contraction_count"].dropna().sum()) if "late_decel_after_contraction_count" in feat_df.columns else 0
+            st.metric("Total late decels after contraction", str(late_sum))
+        with c3:
+            high_frac = (csr_vals > 0.5).sum()
+            st.metric("Records >50% decel after contraction", str(high_frac))
+
+        fig_csr, ax_csr = plt.subplots(figsize=(8, 3.5))
+        fig_csr.patch.set_facecolor("white")
+        ax_csr.hist(csr_vals, bins=25, color="#27ae60", edgecolor="white", alpha=0.85)
+        ax_csr.axvline(0.5, color="#e74c3c", linestyle="--", linewidth=1.5, label="50% threshold")
+        ax_csr.set_xlabel("Fraction of Contractions Followed by Deceleration", fontsize=11)
+        ax_csr.set_ylabel("Count", fontsize=11)
+        ax_csr.set_title("Contraction Stress Response Distribution", fontsize=12)
+        ax_csr.legend(fontsize=9)
+        ax_csr.set_facecolor("#f8f9fa")
+        ax_csr.grid(True, axis="y", alpha=0.3)
+        plt.tight_layout()
+        st.pyplot(fig_csr)
+        plt.close(fig_csr)
+
+    st.markdown("---")
+
+    # ── pH / Outcome analysis ─────────────────────────────────────────────────
+    st.subheader("Clinical Outcome Analysis (CTU-UHB)")
+
+    if not feat_df.empty and "ph" in feat_df.columns:
+        ph_df = feat_df[feat_df["ph"].notna() & (feat_df["ph"] > 0)].copy()
+
+        if len(ph_df) > 3:
+            ph_c1, ph_c2 = st.columns(2)
+
+            with ph_c1:
+                ph_label_counts = ph_df["ph_label"].value_counts()
+                fig_ph_pie, ax_pie = plt.subplots(figsize=(5, 4))
+                fig_ph_pie.patch.set_facecolor("white")
+                colors_pie = {"normal": "#27ae60", "borderline": "#f39c12", "acidosis": "#e74c3c", "unknown": "#bdc3c7"}
+                wedge_colors = [colors_pie.get(l, "#888") for l in ph_label_counts.index]
+                ax_pie.pie(ph_label_counts.values, labels=ph_label_counts.index, colors=wedge_colors,
+                           autopct="%1.0f%%", startangle=90, textprops={"fontsize": 10})
+                ax_pie.set_title("pH Classification Distribution", fontsize=11)
+                plt.tight_layout()
+                st.pyplot(fig_ph_pie)
+                plt.close(fig_ph_pie)
+
+            with ph_c2:
+                fig_ph_hist, ax_ph = plt.subplots(figsize=(6, 4))
+                fig_ph_hist.patch.set_facecolor("white")
+                ax_ph.hist(ph_df["ph"], bins=25, color="#2980b9", edgecolor="white", alpha=0.85)
+                ax_ph.axvline(7.05, color="#e74c3c", linestyle="--", linewidth=1.5, label="Acidosis < 7.05")
+                ax_ph.axvline(7.15, color="#f39c12", linestyle="--", linewidth=1.5, label="Borderline < 7.15")
+                ax_ph.set_xlabel("Umbilical Artery pH", fontsize=11)
+                ax_ph.set_ylabel("Count", fontsize=11)
+                ax_ph.set_title("pH Distribution (CTU-UHB)", fontsize=12)
+                ax_ph.legend(fontsize=9)
+                ax_ph.set_facecolor("#f8f9fa")
+                ax_ph.grid(True, axis="y", alpha=0.3)
+                plt.tight_layout()
+                st.pyplot(fig_ph_hist)
+                plt.close(fig_ph_hist)
+
+        else:
+            st.info("pH data available only for CTU-UHB recordings. Load real CTU-UHB data to see pH analysis.")
+
+    st.markdown("---")
+
+    # ── Cross-dataset generalization ──────────────────────────────────────────
+    st.subheader("Cross-Dataset Feature Consistency")
+    st.markdown("""
+    This section checks whether clinical CTG features have consistent statistical distributions
+    across the three data sources — a prerequisite for cross-dataset model generalization
+    as emphasised in the CTGDL paper and the Nature multicenter deep-learning CTG study
+    (Automated interpretation of CTG using deep learning, Sci. Reports 2025).
+    """)
+
+    if not feat_df.empty and "source" in feat_df.columns:
+        compare_feats = [c for c in [
+            "baseline_fhr", "stv", "ltv", "n_decels", "n_accels",
+            "deceleration_burden_index", "fetal_reserve_score", "signal_quality",
+        ] if c in feat_df.columns]
+
+        summary_rows = []
+        for feat in compare_feats:
+            row = {"Feature": feat.replace("_", " ").title()}
+            for src in feat_df["source"].unique():
+                vals = feat_df.loc[feat_df["source"] == src, feat].dropna()
+                if len(vals) > 0:
+                    row[src] = f"{vals.mean():.2f} ± {vals.std():.2f}"
+                else:
+                    row[src] = "—"
+            summary_rows.append(row)
+
+        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+        # KS-test pairwise for signal quality
+        sources = feat_df["source"].unique().tolist()
+        if len(sources) >= 2 and "signal_quality" in feat_df.columns:
+            from scipy.stats import ks_2samp
+            st.markdown("#### Kolmogorov–Smirnov Test: Signal Quality Distribution Across Sources")
+            ks_rows = []
+            for i in range(len(sources)):
+                for j in range(i + 1, len(sources)):
+                    a = feat_df.loc[feat_df["source"] == sources[i], "signal_quality"].dropna()
+                    b = feat_df.loc[feat_df["source"] == sources[j], "signal_quality"].dropna()
+                    if len(a) > 1 and len(b) > 1:
+                        stat, p = ks_2samp(a, b)
+                        ks_rows.append({
+                            "Source A": sources[i],
+                            "Source B": sources[j],
+                            "KS Statistic": round(float(stat), 4),
+                            "p-value": round(float(p), 4),
+                            "Interpretation": "Similar" if p > 0.05 else "Different distribution",
+                        })
+            if ks_rows:
+                st.dataframe(pd.DataFrame(ks_rows), use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # ── CTGDL references ──────────────────────────────────────────────────────
+    st.subheader("Dataset References")
+    st.markdown("""
+    | Dataset | Citation | License | URL |
+    |---------|----------|---------|-----|
+    | CTU-UHB | Chudáček et al. (2014). Open access intrapartum CTG database. *BMC Pregnancy and Childbirth* 14:16 | ODC-BY-1.0 | [physionet.org](https://physionet.org/content/ctu-uhb-ctgdb/1.0.0/) |
+    | FHRMA | FHRMA Toolbox, MathWorks File Exchange #115890 | GPL-3.0 | [mathworks.com](https://www.mathworks.com/matlabcentral/fileexchange/115890) |
+    | SPAM / CTG Challenge 2017 | 2nd SPaM Workshop, Oxford (2017) | Data Use Agreement | [zenodo.org/records/19510407](https://zenodo.org/records/19510407) |
+    | CTGDL (unified) | Fridman et al. (2025). CTGDL: A multi-source CTG dataset. *SSRN* 6027919 | Mixed | [papers.ssrn.com](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=6027919) |
+    | WFDB | Goldberger et al. (2000). PhysioBank, PhysioToolkit, and PhysioNet. *Circulation* 101(23):e215–e220 | Open | [physionet.org](https://physionet.org) |
+
+    > **Note on synthetic fallback:** When real datasets cannot be downloaded, FetalyzeAI generates
+    > physiologically-plausible synthetic CTG signals using CTU-UHB distribution statistics.
+    > Synthetic records are clearly labelled and are used only for UI demonstration purposes.
+    > All production modelling should use the real datasets linked above.
+    """)
 
 
 st.sidebar.markdown("---")
