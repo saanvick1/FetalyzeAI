@@ -29,7 +29,6 @@ export function PredictionForm({ values, onChange, onSubmit, loading }: Props) {
 
   return (
     <div className="form-card">
-      {/* Presets */}
       <div className="form-card__presets">
         <span className="form-card__presets-label">Quick presets:</span>
         {PRESETS.map(p => (
@@ -47,7 +46,6 @@ export function PredictionForm({ values, onChange, onSubmit, loading }: Props) {
         </button>
       </div>
 
-      {/* Group tabs */}
       <div className="form-card__groups">
         {FEATURE_GROUPS.map(g => (
           <button
@@ -60,7 +58,6 @@ export function PredictionForm({ values, onChange, onSubmit, loading }: Props) {
         ))}
       </div>
 
-      {/* Feature inputs */}
       <div className="form-card__fields">
         {groupFeatures.map(feat => (
           <FeatureInput
@@ -72,7 +69,6 @@ export function PredictionForm({ values, onChange, onSubmit, loading }: Props) {
         ))}
       </div>
 
-      {/* Submit */}
       <div className="form-card__footer">
         <div className="form-card__count">
           {FEATURES.length} features across {FEATURE_GROUPS.length} groups
