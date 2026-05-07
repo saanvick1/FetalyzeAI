@@ -5,6 +5,7 @@ import { ResultPanel } from './components/ResultPanel'
 import { HistoryPanel } from './components/HistoryPanel'
 import { DisclaimerBanner } from './components/DisclaimerBanner'
 import { ResearchPanel } from './components/ResearchPanel'
+import { TuningPanel } from './components/TuningPanel'
 import { predict, type PredictionResult } from './lib/api'
 import { DEFAULT_VALUES, type FeatureValues } from './lib/features'
 import { supabase } from './lib/supabase'
@@ -30,7 +31,7 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [history, setHistory] = useState<HistoryEntry[]>([])
-  const [activeTab, setActiveTab] = useState<'predict' | 'history' | 'research'>('predict')
+  const [activeTab, setActiveTab] = useState<'predict' | 'history' | 'research' | 'tuning'>('predict')
   const sessionId = getSessionId()
 
   const handlePredict = useCallback(async () => {
@@ -98,7 +99,13 @@ export default function App() {
           className={`app__tab ${activeTab === 'research' ? 'app__tab--active' : ''}`}
           onClick={() => setActiveTab('research')}
         >
-          Model & Evidence
+          Model &amp; Evidence
+        </button>
+        <button
+          className={`app__tab ${activeTab === 'tuning' ? 'app__tab--active' : ''}`}
+          onClick={() => setActiveTab('tuning')}
+        >
+          Auto-Tune
         </button>
       </div>
 
@@ -123,6 +130,8 @@ export default function App() {
                 setActiveTab('predict')
               }}
             />
+          ) : activeTab === 'tuning' ? (
+            <TuningPanel />
           ) : (
             <ResearchPanel />
           )
