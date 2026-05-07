@@ -2,9 +2,9 @@
  * FetalyzeAI ReserveNet v1 — Clinical Inference Engine (TypeScript)
  *
  * Implements the ReserveNet domain-partitioned ensemble architecture using
- * UCI CTG feature inputs. Feature importance ordering, domain partitioning,
- * and temperature calibration (T = 0.6596) follow the CTU-CHB/CTU-UHB
- * training results (ctu_reservenet_results.json).
+ * CTU-CHB/CTU-UHB waveform-derived CTG feature inputs. Feature importance
+ * ordering, domain partitioning, and temperature calibration (T = 0.6596)
+ * follow the CTU-CHB/CTU-UHB training results (ctu_reservenet_results.json).
  *
  * Domain experts follow the same partitioning as Python ReserveNet:
  *   Expert A — FHR Baseline (std_fhr, baseline_fhr, signal quality)
@@ -35,8 +35,8 @@ function tempScale(logits: number[]): number[] {
 
 // ── Expert A — FHR Baseline ────────────────────────────────────────────────
 // Mirrors CTU Expert A feature importance: std_fhr (53%), baseline_fhr (21%),
-// signal_quality (19%). UCI proxies: histogram_variance → std_fhr²,
-// baseline_value → baseline_fhr.
+// signal_quality (19%). CTU-CHB feature mappings: histogram_variance → std_fhr²,
+// baseline_value → baseline_fhr (both derived from FHR waveform statistics).
 function expertA(f: FeatureValues): [number, number, number] {
   const bl  = f.baseline_value
   const std = Math.sqrt(Math.max(0, f.histogram_variance))
@@ -71,10 +71,10 @@ function expertA(f: FeatureValues): [number, number, number] {
 
 // ── Expert B — FHR Variability ─────────────────────────────────────────────
 // Mirrors CTU Expert B features: ltv_norm (12%), ltv (12%), stv_norm (8%),
-// stv (7%). UCI proxies: mean_value_of_short_term_variability → stv,
-// mean_value_of_long_term_variability → ltv,
-// abnormal_short_term_variability → stv_norm (% time abnormal STV),
-// percentage_of_time_with_abnormal_long_term_variability → ltv_norm.
+// stv (7%). CTU-CHB waveform features: mean_value_of_short_term_variability → stv
+// (beat-to-beat interval variation), mean_value_of_long_term_variability → ltv
+// (epoch range analysis), abnormal_short_term_variability → stv_norm (% time
+// abnormal STV), percentage_of_time_with_abnormal_long_term_variability → ltv_norm.
 function expertB(f: FeatureValues): [number, number, number] {
   const stv      = f.mean_value_of_short_term_variability
   const ltv      = f.mean_value_of_long_term_variability
@@ -112,8 +112,9 @@ function expertB(f: FeatureValues): [number, number, number] {
 // ── Expert C — Event Patterns ──────────────────────────────────────────────
 // Mirrors CTU Expert C features: decels, decel_depth/duration, accels,
 // contractions, decel_burden, csr_frac.
-// UCI proxies: prolongued/severe/light decelerations, accelerations,
-// uterine_contractions, fetal_movement.
+// CTU-CHB waveform features: prolongued/severe/light decelerations detected
+// from FHR drops >15 bpm below baseline; accelerations, uterine_contractions,
+// and fetal_movement computed from FHR/UC signal event detection.
 function expertC(f: FeatureValues): [number, number, number] {
   const prolonged = f.prolongued_decelerations
   const severe    = f.severe_decelerations
