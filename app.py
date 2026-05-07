@@ -759,7 +759,10 @@ with tab1:
     
     st.markdown("""
     ### Primary Research Question
-    **Can the TOPQUA architecture — combining Topological Data Analysis, Quantum Fourier Coupling, Riemannian Metric Attention, KAN-inspired B-spline activations, and Lyapunov stability regularization — achieve clinically superior fetal health classification compared to conventional neural network baselines?**
+    **Can a calibrated hybrid CTG model — combining leakage-free preprocessing, regularized XGBoost, a small deep ensemble, and temperature scaling — achieve clinically credible fetal health classification with well-calibrated uncertainty estimates compared to conventional baselines?**
+
+    > **v4.0 note:** The architecture has been simplified from v3.0 to reduce overfitting risk on the 2,126-sample UCI CTG dataset.
+    > Primary evaluation metrics are held-out test macro-F1 and pathological recall, not full-dataset accuracy.
     """)
     
     hyp_col1, hyp_col2 = st.columns(2)
@@ -889,16 +892,21 @@ with tab1:
     with col4:
         st.metric("Best Model", "FetalyzeAI")
     
-    st.subheader("🏆 Model Performance Summary")
-    
+    st.subheader("Model Performance Summary")
+    st.caption(
+        "v4.0 primary metrics: held-out test macro-F1 and pathological recall. "
+        "Accuracy shown here is on the held-out test split (20% of data, never seen during training). "
+        "Full-dataset accuracy is NOT used as a primary claim."
+    )
+
     cols = st.columns(3)
     for i, m in enumerate(model_names):
         if m in metrics_data:
             with cols[i]:
                 st.markdown(f"### {display_names[m]}")
-                st.metric("Accuracy", f"{metrics_data[m]['accuracy']:.2f}%")
-                st.metric("F1-Score", f"{metrics_data[m]['f1']*100:.2f}%")
-                st.metric("Recall", f"{metrics_data[m]['recall']*100:.2f}%")
+                st.metric("Held-Out Test Accuracy", f"{metrics_data[m]['accuracy']:.2f}%")
+                st.metric("Macro-F1 (primary)", f"{metrics_data[m]['f1']*100:.2f}%")
+                st.metric("Macro Recall", f"{metrics_data[m]['recall']*100:.2f}%")
                 st.metric("AUC-ROC", f"{metrics_data[m]['auc']:.4f}")
     
     def find_winner(metric_key):
@@ -1536,8 +1544,8 @@ with tab2:
     st.markdown("""
     <div style="background: linear-gradient(135deg, #f3e5f5 0%, #e1bee7 100%); padding: 20px; border-radius: 15px; margin-bottom: 20px; border: 2px solid #9c27b0;">
         <h4 style="color: black; margin: 0 0 10px 0;">Cardiotocography (CTG) Fetal Health Classifier</h4>
-        <p style="color: black; margin: 0;">Enter real CTG measurements below to get an instant fetal health prediction from <strong>FetalyzeAI v3.0 (TOPQUA)</strong>. Each feature is explained with its <strong>medical meaning</strong>, <strong>clinical significance</strong>, and how the <strong>model interprets</strong> it.</p>
-        <p style="color: black; margin: 10px 0 0 0; font-size: 0.9em;">✅ <strong>Trained on UCI CTG dataset (2,126 samples, 21 features):</strong> XGBoost component of the TOPQUA triple ensemble — 94.92% 5-fold CV accuracy on CTG data with class-balanced training (Suspect ×2.4, Pathological ×4.0). Full TOPQUA triple ensemble achieves <strong>98.82% full-dataset accuracy</strong>.</p>
+        <p style="color: black; margin: 0;">Enter real CTG measurements below to get an instant fetal health prediction from <strong>FetalyzeAI v4.0</strong>. Each feature is explained with its <strong>medical meaning</strong>, <strong>clinical significance</strong>, and how the <strong>model interprets</strong> it.</p>
+        <p style="color: black; margin: 10px 0 0 0; font-size: 0.9em;">✅ <strong>Trained on UCI CTG dataset (2,126 samples, 21 features) — leakage-free preprocessing:</strong> Regularized XGBoost (depth 3, strong L1/L2) with leakage-free 5-fold CV. Primary metrics are <strong>held-out test macro-F1</strong> and <strong>pathological recall</strong>. Full-dataset accuracy is intentionally not the primary claim (it includes training data and inflates estimates).</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1725,18 +1733,47 @@ with tab2:
                 help=help_text
             )
     
-    if st.button("🔮 Predict Fetal Health", type="primary"):
-        st.subheader("📊 Prediction Results")
-        
+    if st.button("Predict Fetal Health", type="primary"):
+        st.subheader("Prediction Results")
+
         input_array = np.array([[user_inputs[f] for f in model_features]])
         input_scaled = model_scaler.transform(input_array)
-        
-        probs_array = prediction_model.predict_proba(input_scaled)[0]
+
+        # v4.0: deep ensemble uncertainty — use all members if available, else XGBoost only
+        ensemble_members_loaded = model_artifacts.get('ensemble_members', [])
+        temp_scaler_loaded      = model_artifacts.get('temp_scaler', None)
+
+        if ensemble_members_loaded:
+            # Collect per-member probabilities
+            xgb_probs_single = prediction_model.predict_proba(input_scaled)
+            import torch
+            x_t  = torch.tensor(input_scaled, dtype=torch.float32)
+            xm_t = torch.tensor(xgb_probs_single, dtype=torch.float32)
+            member_probs = []
+            for mem in ensemble_members_loaded:
+                mem.eval()
+                with torch.no_grad():
+                    import torch.nn.functional as F_tmp
+                    p_i = F_tmp.softmax(mem(x_t, xm_t), dim=-1).numpy()[0]
+                member_probs.append(p_i)
+            member_probs = np.array(member_probs)  # (n_members, 3)
+            mean_probs_nn = member_probs.mean(axis=0)
+            # Temperature scaling
+            if temp_scaler_loaded is not None:
+                mean_probs_nn = temp_scaler_loaded.scale(mean_probs_nn[None])[0]
+            probs_array = 0.60 * mean_probs_nn + 0.40 * xgb_probs_single[0]
+            ensemble_std = member_probs.std(axis=0).mean()  # disagreement across members
+        else:
+            probs_array   = prediction_model.predict_proba(input_scaled)[0]
+            member_probs  = None
+            ensemble_std  = None
+
+        probs_array = probs_array / probs_array.sum()  # renormalise after fusion
         normal_prob, suspect_prob, pathological_prob = probs_array[0], probs_array[1], probs_array[2]
-        
-        predicted_idx = np.argmax(probs_array)
+
+        predicted_idx   = np.argmax(probs_array)
         predicted_class = ['Normal', 'Suspect', 'Pathological'][predicted_idx]
-        confidence = probs_array[predicted_idx]
+        confidence      = probs_array[predicted_idx]
         
         class_colors = {'Normal': '#2e7d32', 'Suspect': '#f57f17', 'Pathological': '#c62828'}
         class_bg = {'Normal': '#e8f5e9', 'Suspect': '#fff8e1', 'Pathological': '#ffebee'}
@@ -1874,9 +1911,14 @@ with tab2:
         # ═══════════════════════════════════════════════════════════════════
         # ① UNCERTAINTY ESTIMATION (Shannon Entropy)
         # ═══════════════════════════════════════════════════════════════════
-        st.subheader("🎲 Uncertainty Estimation")
+        st.subheader("Uncertainty Estimation")
+        st.caption(
+            "v4.0 uses a deep ensemble of 5 calibrated models. "
+            "Shannon entropy measures single-model uncertainty; ensemble disagreement "
+            "(std across members) measures epistemic uncertainty — higher is less reliable."
+        )
         entropy = -np.sum(probs_array * np.log(probs_array + 1e-12))
-        max_entropy = np.log(3)          # log(num_classes)
+        max_entropy = np.log(3)
         uncertainty_pct = (entropy / max_entropy) * 100
         margin = sorted(probs_array)[-1] - sorted(probs_array)[-2]
 
@@ -1887,15 +1929,21 @@ with tab2:
         elif uncertainty_pct < 60:
             cert_label, cert_color = "Moderate Uncertainty", "#e65100"
         else:
-            cert_label, cert_color = "High Uncertainty — Use Caution", "#b71c1c"
+            cert_label, cert_color = "High Uncertainty — Review Recommended", "#b71c1c"
 
-        uc1, uc2, uc3 = st.columns(3)
-        with uc1:
-            st.metric("Shannon Entropy", f"{entropy:.4f}", help="0 = perfectly certain, log(3)≈1.099 = maximally uncertain")
-        with uc2:
-            st.metric("Uncertainty Level", f"{uncertainty_pct:.1f}%", help="Entropy normalized to 0-100%")
-        with uc3:
-            st.metric("Prediction Margin", f"{margin:.3f}", help="Gap between top-2 class probabilities — larger = more decisive")
+        uc_cols = st.columns(4)
+        with uc_cols[0]:
+            st.metric("Shannon Entropy", f"{entropy:.4f}", help="0 = perfectly certain, log(3)=1.099 = maximally uncertain")
+        with uc_cols[1]:
+            st.metric("Uncertainty Level", f"{uncertainty_pct:.1f}%", help="Entropy normalised to 0-100%")
+        with uc_cols[2]:
+            st.metric("Prediction Margin", f"{margin:.3f}", help="Gap between top-2 probabilities — larger = more decisive")
+        with uc_cols[3]:
+            if ensemble_std is not None:
+                st.metric("Ensemble Disagreement", f"{ensemble_std:.4f}",
+                          help="Mean std across 5 ensemble members — higher = less reliable (epistemic uncertainty)")
+            else:
+                st.metric("Ensemble Disagreement", "N/A", help="Load prediction_model.pkl with ensemble_members for this metric")
 
         st.markdown(f"""
         <div style="background: {'#e8f5e9' if uncertainty_pct < 40 else '#fff3e0' if uncertainty_pct < 60 else '#ffebee'};
@@ -2515,8 +2563,22 @@ with tab3:
 
 with tab4:
     st.markdown("""
-    <div style="background: linear-gradient(135deg, #f3e5f5 0%, #e1bee7 100%); padding: 20px; border-radius: 15px; margin-bottom: 25px; border: 2px solid #7b1fa2;">
-        <h2 style="color: black; margin: 0; text-align: center;">🏆 Model Comparison & Results</h2>
+    <div style="background:#f0f4f8;padding:18px;border-radius:10px;margin-bottom:18px;border-left:4px solid #2980b9;">
+    <h4 style="color:#1a3a5c;margin:0 0 6px 0;">v4.0 Methodology — What Changed and Why</h4>
+    <ul style="color:#333;font-size:0.9em;margin:0;padding-left:18px;line-height:1.9;">
+      <li><strong>Leakage-free preprocessing:</strong> Imputer and scaler now fit only on the training split inside every CV fold, not on the full dataset before splitting.</li>
+      <li><strong>Regularized XGBoost:</strong> Depth reduced 8 → 3; L1/L2 penalties increased (alpha=0.5, lambda=5.0); n_estimators reduced 400 → 200. Prevents memorizing 2,126 samples.</li>
+      <li><strong>Smaller MLP:</strong> Hidden dimension reduced 512 → 128. A 1.8M-parameter network cannot reliably be fitted on 1,700 training rows.</li>
+      <li><strong>Deep ensemble (5 members) + temperature scaling:</strong> Member disagreement is a direct measure of epistemic uncertainty; temperature scaling calibrates confidence.</li>
+      <li><strong>Primary metrics:</strong> Macro-F1 and pathological recall are primary. Full-dataset accuracy (which includes training data) is shown only for historical reference, not as a clinical claim.</li>
+      <li><strong>Nested CV:</strong> Preprocessing is re-fit inside every fold to give unbiased estimates.</li>
+    </ul>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div style="background: linear-gradient(135deg, #e8f4fd 0%, #d6eaf8 100%); padding: 20px; border-radius: 15px; margin-bottom: 25px; border: 2px solid #2980b9;">
+        <h2 style="color: black; margin: 0; text-align: center;">Model Comparison and Results</h2>
         <p style="color: black; text-align: center; margin-top: 8px;">Architecture details, metrics comparison, cross-validation, and clinical decision support</p>
     </div>
     """, unsafe_allow_html=True)
