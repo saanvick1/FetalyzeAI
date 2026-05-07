@@ -1,0 +1,148 @@
+.history-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+  padding: 80px 24px;
+  color: var(--neutral-400);
+}
+
+.history-empty h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--neutral-500);
+}
+
+.history-empty p {
+  font-size: 0.875rem;
+}
+
+.history-panel {
+  background: #fff;
+  border: 1px solid var(--neutral-200);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.history-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--neutral-100);
+}
+
+.history-panel__header h2 {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--neutral-800);
+}
+
+.history-panel__count {
+  font-size: 0.75rem;
+  color: var(--neutral-400);
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  divide-y: 1px solid var(--neutral-100);
+}
+
+.history-item {
+  display: grid;
+  grid-template-columns: 120px 1fr auto;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 20px;
+  background: #fff;
+  border: none;
+  border-bottom: 1px solid var(--neutral-100);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.history-item:last-child { border-bottom: none; }
+.history-item:hover { background: var(--neutral-50); }
+
+.history-item__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border-radius: 20px;
+  border: 1.5px solid;
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.history-item__body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.history-item__row {
+  display: flex;
+  gap: 16px;
+}
+
+.history-item__metric {
+  font-size: 0.8rem;
+  color: var(--neutral-500);
+}
+
+.history-item__metric strong {
+  color: var(--neutral-700);
+}
+
+.history-item__probs {
+  display: flex;
+  gap: 8px;
+}
+
+.history-item__time {
+  font-size: 0.75rem;
+  color: var(--neutral-400);
+  white-space: nowrap;
+}
+
+/* Mini bars */
+.mini-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+}
+
+.mini-bar__label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  width: 10px;
+  flex-shrink: 0;
+}
+
+.mini-bar__track {
+  flex: 1;
+  height: 4px;
+  background: var(--neutral-100);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.mini-bar__fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+.mini-bar__value {
+  font-size: 0.65rem;
+  color: var(--neutral-400);
+  width: 26px;
+  text-align: right;
+}
