@@ -1,0 +1,241 @@
+These files are **still using or referencing `fetal_health.csv` / UCI-Kaggle fetal health**:
+
+| File                                    | What to change                                                                                                                                                    |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fetal_health.csv`                      | Delete from repo if you want zero fetal-health dependency. It is listed in the repo root. ([GitHub][1])                                                           |
+| `README.md`                             | Still describes TOPQUA results on the UCI CTG dataset and claims UCI-based accuracy/AUC. ([GitHub][1])                                                            |
+| `app.py`                                | Still contains UCI/fetal-health wording, old data integrity text, UCI limitations, UCI reproducibility claims, and benchmark cards. ([GitHub][2])                 |
+| `train_fetalyze_v3.py`                  | Directly loads `pd.read_csv('fetal_health.csv')` and trains on `df['fetal_health']`. ([GitHub][3])                                                                |
+| `train_topqua_sensitivity_optimized.py` | Directly loads `pd.read_csv('fetal_health.csv')` and trains on `df['fetal_health']`. ([GitHub][4])                                                                |
+| `retrain_v3_predictor.py`               | Directly loads `pd.read_csv('fetal_health.csv')` and saves `prediction_model.pkl` trained on the UCI dataset. ([GitHub][5])                                       |
+| `ctgdl_loader.py`                       | Has `UCI_KAGGLE_URL`, `UCI_LOCAL_PATH = Path("fetal_health.csv")`, and `load_uci_kaggle_benchmark()`. ([GitHub][6])                                               |
+| `train_ctu_signal_model.py`             | Mostly CTU-based, but still imports `load_uci_kaggle_benchmark`, runs a UCI/Kaggle benchmark step, and saves `"external_benchmark_uci"` in results. ([GitHub][7]) |
+| `fetal_health_analysis.py`              | Only launches `app.py`; not directly using the dataset, but the filename should be renamed to avoid confusion. ([GitHub][8])                                      |
+
+The most important removals are:
+`train_fetalyze_v3.py`, `train_topqua_sensitivity_optimized.py`, `retrain_v3_predictor.py`, `ctgdl_loader.py`, `train_ctu_signal_model.py`, and `app.py`.
+
+---
+
+## Prompt for Replit
+
+Copy this into Replit Agent:
+
+```text
+I want to completely remove the fetal_health.csv / UCI / Kaggle fetal health dataset from this project. The primary and only training dataset should be the CTU-CHB / CTU-UHB intrapartum cardiotocography dataset ZIP that I uploaded:
+
+attached_assets/ctu-chb-intrapartum-cardiotocography-database-1.0.0.zip
+
+Make the project use real CTU-CHB/CTU-UHB WFDB files only. Do not use fetal_health.csv, UCI, Kaggle, downloaded GitHub mirrors, or synthetic fallback data anywhere in the main training or app pipeline.
+
+Required changes:
+
+1. Delete or ignore fetal_health.csv.
+2. Remove all direct references to fetal_health.csv.
+3. Remove UCI/Kaggle benchmark loading from ctgdl_loader.py.
+4. Remove UCI_KAGGLE_URL, UCI_LOCAL_PATH, and load_uci_kaggle_benchmark().
+5. Remove the UCI/Kaggle benchmark step from train_ctu_signal_model.py.
+6. Remove external_benchmark_uci from saved results.
+7. Rename or archive these old fetal-health training files:
+   - train_fetalyze_v3.py
+   - train_topqua_sensitivity_optimized.py
+   - retrain_v3_predictor.py
+   - fetal_health_analysis.py
+8. Create or update the primary training script as:
+   train_reservenet_ctu.py
+9. The app.py file must no longer load fetal_health.csv or mention UCI/Kaggle as a current dataset.
+10. app.py should load only:
+   - results/ctu_reservenet_results.json
+   - results/ctu_case_predictions.csv
+   - results/ctu_window_timeline.csv
+   - models/ctu_reservenet.pkl
+
+Dataset loading requirements:
+
+Create a local CTU loader that:
+- Looks for the uploaded ZIP at attached_assets/ctu-chb-intrapartum-cardiotocography-database-1.0.0.zip
+- Extracts it into data/ctu-chb-intrapartum-cardiotocography-database-1.0.0/
+- Verifies that .hea and .dat files exist
+- Loads records using wfdb
+- Extracts fetal heart rate and uterine contraction channels
+- Parses clinical outcome metadata from .hea comments, especially pH, Apgar1, Apgar5, and base deficit if available
+- Raises a RuntimeError if real CTU files are missing
+- Never silently creates synthetic data
+
+Use this error if real data is missing:
+
+RuntimeError: Real CTU-CHB/CTU-UHB files were not found. Synthetic or fetal_health.csv fallback data is not allowed.
+
+Training requirements:
+
+Use the CTU waveform data as the primary dataset.
+
+Pipeline:
+1. Load real CTU records from the uploaded ZIP.
+2. Extract FHR and UC signals.
+3. Extract clinical CTG features:
+   - baseline FHR
+   - short-term variability
+   - long-term variability
+   - accelerations
+   - decelerations
+   - deceleration burden index
+   - contraction count
+   - contraction stress response
+   - fetal reserve score
+   - signal quality
+   - missingness percentage
+   - recovery after contractions
+4. Assign labels only from clinical outcomes:
+   - pH
+   - base deficit
+   - Apgar1
+   - Apgar5
+5. Do not assign labels from fetal reserve score, deceleration burden index, or other engineered predictor features.
+6. Drop records without usable clinical outcome labels.
+7. Split by record_id, not by window, so windows from the same CTG record never appear in both train and test.
+8. Use train/validation/test split:
+   - train: model fitting
+   - validation: early stopping, threshold tuning, temperature scaling
+   - test: final untouched evaluation only
+9. Fit imputer/scaler only on the training set.
+10. Do not tune on the test set.
+
+Model architecture:
+
+Replace TOPQUA with a cleaner unique model called FetalyzeAI ReserveNet.
+
+Implement these files:
+
+1. pulsefm_encoder.py
+   - PulseEncoder: small CNN-TCN encoder for raw FHR + UC + missingness mask
+   - Optional MaskedCTGAutoencoder for self-supervised pretraining
+
+2. ctg_feature_engine.py or update ctgdl_features.py
+   - fetal reserve score
+   - deceleration burden index
+   - contraction stress response
+   - signal quality score
+   - window-level timeline features
+
+3. reservenet_model.py
+   - ReserveNet fusion model
+   - combines CTG signal embedding + clinical feature vector
+   - outputs risk class, fetal reserve estimate, and uncertainty score
+
+4. metrics_utils.py
+   - accuracy
+   - balanced accuracy
+   - macro-F1
+   - high-risk recall
+   - watch recall
+   - confusion matrix
+   - AUROC/AUPRC if valid
+   - Brier score
+   - expected calibration error
+   - uncertainty metrics
+
+5. train_reservenet_ctu.py
+   - main CTU training script
+   - saves:
+     models/ctu_reservenet.pkl
+     results/ctu_reservenet_results.json
+     results/ctu_case_predictions.csv
+     results/ctu_window_timeline.csv
+
+App requirements:
+
+Update app.py so it becomes a CTU-based clinical research dashboard.
+
+Tabs:
+1. Case Review
+   - risk class
+   - confidence
+   - uncertainty
+   - fetal reserve score
+   - deceleration burden
+   - contraction stress response
+   - signal quality
+
+2. CTG Timeline
+   - window-by-window risk
+   - fetal reserve trend
+   - deceleration burden trend
+   - signal quality trend
+
+3. Model Performance
+   - accuracy
+   - balanced accuracy
+   - macro-F1
+   - high-risk recall
+   - AUROC/AUPRC if available
+   - Brier score
+   - ECE
+   - confusion matrix
+
+4. Feature and Error Analysis
+   - top features
+   - false negatives
+   - false positives
+   - uncertain cases
+   - poor-signal cases
+
+5. Safety Notes
+   - clearly state that FetalyzeAI is research-stage
+   - does not diagnose fetal distress
+   - does not recommend treatment
+   - does not replace clinicians
+   - only flags concerning or uncertain CTG patterns for clinician review
+
+Remove these claims everywhere:
+- UCI dataset primary
+- Kaggle primary
+- fetal_health.csv
+- TOPQUA as the main model
+- full-dataset accuracy as a main result
+- clinically accurate decisions
+- FDA-ready
+- replaces clinicians
+- world’s first unless proven
+
+Use this project identity:
+
+FetalyzeAI ReserveNet is a research-stage, uncertainty-aware CTG second-reader trained on real CTU-CHB/CTU-UHB waveform data. It analyzes fetal heart rate, uterine contractions, fetal reserve, deceleration burden, contraction stress response, signal quality, and uncertainty to support clinician review.
+
+After making changes, run:
+python train_reservenet_ctu.py
+streamlit run app.py --server.port 5000
+```
+
+---
+
+## One extra instruction I would add
+
+Tell Replit this too:
+
+```text
+Search the entire repo for these strings and remove or replace them unless they appear only in an archived legacy file:
+
+fetal_health
+fetal_health.csv
+UCI
+Kaggle
+TOPQUA
+full-dataset accuracy
+prediction_model.pkl
+external_benchmark_uci
+load_uci_kaggle_benchmark
+UCI_KAGGLE_URL
+UCI_LOCAL_PATH
+```
+
+That will force the cleanup to be complete.
+
+[1]: https://github.com/saanvick1/FetalyzeAI "GitHub - saanvick1/FetalyzeAI: An Uncertainty-Aware Hybrid Intelligence Framework for Reliable Fetal Health Classification Using Cardiotocography — ISEF Research Project · GitHub"
+[2]: https://raw.githubusercontent.com/saanvick1/FetalyzeAI/main/app.py "raw.githubusercontent.com"
+[3]: https://raw.githubusercontent.com/saanvick1/FetalyzeAI/main/train_fetalyze_v3.py "raw.githubusercontent.com"
+[4]: https://raw.githubusercontent.com/saanvick1/FetalyzeAI/main/train_topqua_sensitivity_optimized.py "raw.githubusercontent.com"
+[5]: https://raw.githubusercontent.com/saanvick1/FetalyzeAI/main/retrain_v3_predictor.py "raw.githubusercontent.com"
+[6]: https://raw.githubusercontent.com/saanvick1/FetalyzeAI/main/ctgdl_loader.py "raw.githubusercontent.com"
+[7]: https://raw.githubusercontent.com/saanvick1/FetalyzeAI/main/train_ctu_signal_model.py "raw.githubusercontent.com"
+[8]: https://raw.githubusercontent.com/saanvick1/FetalyzeAI/main/fetal_health_analysis.py "raw.githubusercontent.com"
