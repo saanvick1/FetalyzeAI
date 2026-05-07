@@ -3,7 +3,7 @@
 ## Overview
 A React + Vite dashboard for fetal health classification trained on **real intrapartum waveform data** from the CTU-UHB and CTGDL databases. The model is trained on raw FHR/UC signals — not tabular feature extracts. Run `python train_ctu_signal_model.py` to generate real evaluation metrics into `ctu_model_results.json`.
 
-**Key Feature:** All training uses real hospital-grade waveform data (CTU-UHB, PhysioNet). No Kaggle/UCI tabular datasets.
+**Key Feature:** All training uses real hospital-grade waveform data (CTU-UHB, PhysioNet).
 
 ### Datasets (primary sources only)
 - **CTU-UHB Intrapartum CTG Database (PRIMARY)**: 552 real intrapartum CTG recordings (FHR + UC @ 4 Hz). Clinical outcomes: cord blood pH, base deficit, Apgar scores. Source: PhysioNet (Chudáček et al., 2014)
@@ -19,7 +19,7 @@ A React + Vite dashboard for fetal health classification trained on **real intra
 - **Frontend:** React 18 + Vite 5 + TypeScript, port 5000
 - **Prediction:** Fully client-side via `src/lib/predictor.ts`
 - **Research tab:** Displays real evaluation numbers from `ctu_model_results.json`
-- **No Kaggle/UCI data** anywhere in training, evaluation, or display
+- **No external tabular datasets** anywhere in training, evaluation, or display
 
 ## Project Architecture
 
