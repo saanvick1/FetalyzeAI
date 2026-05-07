@@ -1,0 +1,235 @@
+I could access the live page title — **“FetalyzeAI — CTG Second-Reader”** — but the site content did not expose much readable text through the browser tool. Based on the live site positioning and your FetalyzeAI goals, here are the most important suggestions.
+
+## 1. Change the hero message to sound more clinical and credible
+
+Current direction seems to be:
+
+> FetalyzeAI — CTG Second-Reader
+
+Better hero:
+
+> **FetalyzeAI**
+> **Uncertainty-aware CTG second reader for fetal monitoring research**
+> Helping clinicians and researchers identify concerning, uncertain, or borderline fetal monitoring patterns from cardiotocography data.
+
+Add a safety line directly under it:
+
+> Research-stage decision-support tool. Not intended for diagnosis, treatment, or replacement of clinician judgment.
+
+This makes the project safer and more professional.
+
+---
+
+## 2. Add a “How It Works” section
+
+Use a simple 4-step flow:
+
+```text
+CTG Signal Upload
+        ↓
+Signal Quality Check
+        ↓
+FHR + UC Pattern Analysis
+        ↓
+Risk + Uncertainty + Explanation
+```
+
+For the website, say:
+
+> FetalyzeAI analyzes fetal heart rate, uterine contraction patterns, variability, decelerations, signal quality, and uncertainty to support review of CTG tracings.
+
+---
+
+## 3. Add the unique clinical features
+
+The site should not look like a generic ML classifier. Add these as feature cards:
+
+### Fetal Reserve Score
+
+Estimates how well the fetus appears to tolerate labor stress over time.
+
+### Deceleration Burden Index
+
+Measures the severity, recurrence, duration, and recovery pattern of decelerations.
+
+### Contraction Stress Response
+
+Analyzes how fetal heart rate responds after uterine contractions.
+
+### Uncertainty-Aware Output
+
+Flags borderline or low-confidence cases for clinician review instead of forcing overconfident predictions.
+
+### Signal Quality Check
+
+Identifies missing, noisy, or unreliable CTG segments before prediction.
+
+These make FetalyzeAI feel much more original.
+
+---
+
+## 4. Improve the model result wording
+
+Do not only show:
+
+> 90% accuracy
+
+Instead show:
+
+```text
+Model Evaluation Focus
+- High-risk recall
+- Balanced accuracy
+- Macro-F1
+- AUROC / AUPRC
+- Calibration
+- False-negative analysis
+- Cross-dataset validation
+```
+
+Better wording:
+
+> FetalyzeAI is being evaluated beyond accuracy, with emphasis on high-risk recall, uncertainty calibration, and cross-dataset generalization.
+
+This sounds much more clinical.
+
+---
+
+## 5. Add a “Datasets Used” section
+
+Use only the strongest three:
+
+### CTGDL — Primary development dataset
+
+Use as the main multi-source CTG waveform dataset. Mention that the pipeline verifies real CTGDL files and does not use synthetic placeholder data.
+
+### CTU-UHB / CTU-CHB — Clinical benchmark
+
+Used for fetal heart rate, uterine contraction signals, and outcome-based evaluation.
+
+### UCI / Kaggle Fetal Health — Tabular benchmark
+
+Used only as a feature-based comparison benchmark, not as clinical proof.
+
+Website wording:
+
+> FetalyzeAI is designed to avoid dataset-specific memorization by training and testing across waveform and tabular CTG datasets.
+
+---
+
+## 6. Add a “Clinical Safety” section
+
+This is very important.
+
+Add this box:
+
+> **Clinical Safety Notice**
+> FetalyzeAI is a research-stage AI tool. It does not diagnose fetal distress, recommend treatment, or replace clinicians. It is designed to support research into CTG interpretation, uncertainty estimation, and risk stratification.
+
+This protects the project and makes it look mature.
+
+---
+
+## 7. Add an example output card
+
+Example:
+
+```text
+Overall Status: Watch Closely
+Risk Level: Moderate
+Confidence: 72%
+Uncertainty: Moderate
+Fetal Reserve Score: 46 / 100
+Deceleration Burden: Increasing
+Signal Quality: Acceptable
+
+Main reasons:
+- Recurrent decelerations in recent windows
+- Slower recovery after contractions
+- Reduced variability trend
+- Borderline pattern, clinician review recommended
+```
+
+This helps judges immediately understand the product.
+
+---
+
+## 8. Add a “Why It Matters” section
+
+Use simple wording:
+
+> CTG interpretation can be difficult because many tracings are not clearly normal or clearly pathological. These borderline cases create uncertainty. FetalyzeAI focuses on identifying uncertain and concerning patterns, not replacing clinical judgment.
+
+This is better than saying only “AI improves fetal monitoring.”
+
+---
+
+## 9. Add a “Roadmap” section
+
+Use:
+
+```text
+Current Stage
+Research prototype using public CTG datasets
+
+Next Step
+Improve waveform model using CTGDL and CTU-UHB
+
+Validation Step
+Retrospective clinician review with de-identified CTG cases
+
+Future Goal
+Silent clinical evaluation where predictions do not affect care
+```
+
+This makes your project look serious and realistic.
+
+---
+
+## 10. Avoid these phrases on the website
+
+Remove or avoid:
+
+* “clinically accurate decisions”
+* “FDA-ready”
+* “diagnoses fetal distress”
+* “replaces doctors”
+* “guaranteed accuracy”
+* “never overfits”
+* “bias-free”
+* “world’s first” unless strongly proven
+
+Use instead:
+
+* “research-stage”
+* “decision support”
+* “second reader”
+* “uncertainty-aware”
+* “clinician review”
+* “risk stratification”
+* “requires external clinical validation”
+
+---
+
+## Best website structure
+
+Use this order:
+
+1. Hero section
+2. What problem FetalyzeAI solves
+3. How FetalyzeAI works
+4. Example output
+5. Model architecture
+6. Datasets used
+7. Evaluation metrics
+8. Clinical safety notice
+9. Roadmap
+10. GitHub / contact / demo links
+
+---
+
+## Best one-line positioning
+
+Use this on the homepage:
+
+> **FetalyzeAI is an uncertainty-aware CTG second reader that analyzes fetal heart rate and contraction patterns to flag concerning or unclear fetal monitoring cases for clinician review.**
