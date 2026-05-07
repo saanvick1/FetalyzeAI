@@ -35,6 +35,16 @@ export function ResultPanel({ result, loading, error }: Props) {
     { name: 'Pathological', value: Math.round(result.prob_pathological * 100), fill: '#dc2626' },
   ]
 
+  const sortedProb = [...probData].sort((a, b) => b.value - a.value)
+  const topRisk = sortedProb[0]
+  const runnerUp = sortedProb[1]
+  const margin = Math.max(0, topRisk.value - runnerUp.value)
+  const decisionLevel = result.risk_label === 'Pathological'
+    ? 'Urgent obstetric review'
+    : result.risk_label === 'Suspect'
+      ? 'Close monitoring'
+      : 'Routine observation'
+
   return (
     <div className="result-panel">
       {/* Risk classification header */}
@@ -64,6 +74,40 @@ export function ResultPanel({ result, loading, error }: Props) {
         </div>
       </div>
 
+      <div className="result-section">
+        <h3 className="result-section__title">Decision Support Snapshot</h3>
+        <div className="decision-grid">
+          <div className="decision-card">
+            <div className="decision-card__label">Primary recommendation</div>
+            <div className="decision-card__value">{decisionLevel}</div>
+          </div>
+          <div className="decision-card">
+            <div className="decision-card__label">Top probability</div>
+            <div className="decision-card__value">{topRisk.name} {topRisk.value}%</div>
+          </div>
+          <div className="decision-card">
+            <div className="decision-card__label">Probability margin</div>
+            <div className="decision-card__value">{margin}%</div>
+          </div>
+        </div>
+        <div className="prob-compare">
+          <div className="prob-compare__bar">
+            <div className="prob-compare__fill prob-compare__fill--top" style={{ width: `${topRisk.value}%`, background: topRisk.fill }} />
+          </div>
+          <div className="prob-compare__row">
+            <span>{topRisk.name}</span>
+            <strong>{topRisk.value}%</strong>
+          </div>
+          <div className="prob-compare__bar">
+            <div className="prob-compare__fill prob-compare__fill--runner" style={{ width: `${runnerUp.value}%`, background: runnerUp.fill }} />
+          </div>
+          <div className="prob-compare__row">
+            <span>{runnerUp.name}</span>
+            <strong>{runnerUp.value}%</strong>
+          </div>
+        </div>
+      </div>
+
       {/* Fetal Reserve Score */}
       <div className="result-section">
         <h3 className="result-section__title">Fetal Reserve Score</h3>
@@ -90,6 +134,36 @@ export function ResultPanel({ result, loading, error }: Props) {
             </div>
             <p className="frs-info__desc">{frsDesc(result.fetal_reserve_score)}</p>
           </div>
+        </div>
+      </div>
+
+      <div className="result-section">
+        <h3 className="result-section__title">Clinical Action Guidance</h3>
+        <div className="action-list">
+          <ActionItem
+            title="Interpretation"
+            text={result.risk_label === 'Pathological'
+              ? 'Pattern is concerning for fetal compromise and warrants immediate review.'
+              : result.risk_label === 'Suspect'
+                ? 'Pattern is borderline and should be followed closely with repeat assessment.'
+                : 'Pattern is reassuring, with no strong signs of compromise.'}
+          />
+          <ActionItem
+            title="Monitoring"
+            text={result.risk_label === 'Pathological'
+              ? 'Continuous monitoring and escalation are appropriate.'
+              : result.risk_label === 'Suspect'
+                ? 'Repeat CTG or closer observation may be appropriate.'
+                : 'Routine monitoring is reasonable unless other clinical concerns exist.'}
+          />
+          <ActionItem
+            title="Key next step"
+            text={result.risk_label === 'Pathological'
+              ? 'Escalate to senior obstetric review.'
+              : result.risk_label === 'Suspect'
+                ? 'Correlate with labour progress, maternal status, and repeat tracing.'
+                : 'Continue standard intrapartum care and reassess if the pattern changes.'}
+          />
         </div>
       </div>
 
@@ -132,6 +206,15 @@ function ProbBar({ label, value, color }: { label: string; value: number; color:
           style={{ width: `${value}%`, background: color }}
         />
       </div>
+    </div>
+  )
+}
+
+function ActionItem({ title, text }: { title: string; text: string }) {
+  return (
+    <div className="action-item">
+      <div className="action-item__title">{title}</div>
+      <div className="action-item__text">{text}</div>
     </div>
   )
 }

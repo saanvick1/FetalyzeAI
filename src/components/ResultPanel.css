@@ -100,6 +100,63 @@
   transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+.decision-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.decision-card {
+  border: 1px solid var(--neutral-200);
+  border-radius: 12px;
+  padding: 12px;
+  background: var(--neutral-50);
+}
+
+.decision-card__label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--neutral-400);
+  margin-bottom: 6px;
+}
+
+.decision-card__value {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--neutral-800);
+  line-height: 1.35;
+}
+
+.prob-compare {
+  display: grid;
+  gap: 8px;
+}
+
+.prob-compare__bar {
+  height: 10px;
+  background: var(--neutral-100);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.prob-compare__fill {
+  height: 100%;
+  border-radius: 999px;
+}
+
+.prob-compare__row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  color: var(--neutral-600);
+}
+
+.prob-compare__row strong {
+  color: var(--neutral-800);
+}
+
 /* FRS Gauge */
 .frs-row { display: flex; align-items: center; gap: 16px; }
 
@@ -160,6 +217,33 @@
   border-radius: 50%;
   flex-shrink: 0;
   margin-top: 5px;
+}
+
+.action-list {
+  display: grid;
+  gap: 10px;
+}
+
+.action-item {
+  padding: 12px;
+  border: 1px solid var(--neutral-200);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.action-item__title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--neutral-500);
+  margin-bottom: 4px;
+}
+
+.action-item__text {
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--neutral-700);
 }
 
 /* Disclaimer */
