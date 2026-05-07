@@ -38,3 +38,8 @@ externalPort = 80
 deploymentTarget = "static"
 build = ["npm", "run", "build"]
 publicDir = "dist"
+
+[userenv]
+
+[userenv.shared]
+CTU_DATASET_ZIP_PATH = '"C:\Users\chakr\Downloads\ctu-chb-intrapartum-cardiotocography-database-1.0.0\ctu-chb-intrapartum-cardiotocography-database-1.0.0.zip"'
