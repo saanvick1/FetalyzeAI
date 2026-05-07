@@ -102,8 +102,8 @@ export function TuningPanel() {
             { key: 'brier', label: 'Brier Score',  hi: false, note: 'Calibration (↓ better)' },
             { key: 'score', label: 'Medical Score', hi: true, note: 'Tuning objective' },
           ].map(({ key, label, hi, note }) => {
-            const bVal = (cmp.before as Record<string, number>)[key]
-            const aVal = (cmp.after  as Record<string, number>)[key]
+            const bVal = (cmp.before as unknown as Record<string, number>)[key]
+            const aVal = (cmp.after  as unknown as Record<string, number>)[key]
             const improved = hi ? aVal > bVal + 0.002 : aVal < bVal - 0.002
             return (
               <div key={key} className={`tp-cmp__col ${improved ? 'tp-cmp__col--better' : ''}`}>

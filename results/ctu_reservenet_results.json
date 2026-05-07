@@ -1,0 +1,409 @@
+{
+  "model_name": "FetalyzeAI ReserveNet v1",
+  "dataset": "CTU-CHB/CTU-UHB Intrapartum CTG Database",
+  "n_records_total": 552,
+  "n_records_labeled": 552,
+  "n_excluded": 0,
+  "label_distribution": {
+    "normal_0": 447,
+    "watch_1": 65,
+    "high_risk_2": 40
+  },
+  "split": {
+    "train": 386,
+    "val": 83,
+    "test": 83,
+    "strategy": "record-level (no window leakage)"
+  },
+  "training_time_s": 15.4,
+  "temperature_T": 0.6596,
+  "n_features": 24,
+  "feature_cols": [
+    "baseline_fhr",
+    "mean_fhr",
+    "std_fhr",
+    "stv",
+    "ltv",
+    "stv_norm",
+    "ltv_norm",
+    "tachycardia_frac",
+    "bradycardia_frac",
+    "n_decels",
+    "decels_per_30min",
+    "mean_decel_depth",
+    "max_decel_depth",
+    "mean_decel_dur_s",
+    "n_accels",
+    "accels_per_30min",
+    "n_contractions",
+    "contractions_per_10min",
+    "decel_burden",
+    "csr_frac",
+    "fetal_reserve_score",
+    "duration_min",
+    "signal_quality",
+    "missing_fhr"
+  ],
+  "test_metrics": {
+    "n_samples": 83,
+    "accuracy": 0.8072,
+    "balanced_accuracy": 0.3333,
+    "macro_f1": 0.2978,
+    "weighted_f1": 0.7211,
+    "high_risk_recall": 0.0,
+    "watch_recall": 0.0,
+    "normal_recall": 1.0,
+    "auroc_macro": 0.6895,
+    "ece": 0.0789,
+    "confusion_matrix": [
+      [
+        67,
+        0,
+        0
+      ],
+      [
+        10,
+        0,
+        0
+      ],
+      [
+        6,
+        0,
+        0
+      ]
+    ],
+    "auroc_binary": 0.6847,
+    "auprc_binary": 0.3784,
+    "sensitivity": 0.125,
+    "specificity": 0.9701,
+    "precision": 0.5,
+    "f1_binary": 0.2,
+    "threshold_used": 0.35
+  },
+  "xgb_test_metrics": {
+    "n_samples": 83,
+    "accuracy": 0.8072,
+    "balanced_accuracy": 0.3333,
+    "macro_f1": 0.2978,
+    "weighted_f1": 0.7211,
+    "high_risk_recall": 0.0,
+    "watch_recall": 0.0,
+    "normal_recall": 1.0,
+    "auroc_macro": 0.7868,
+    "ece": 0.0684,
+    "confusion_matrix": [
+      [
+        67,
+        0,
+        0
+      ],
+      [
+        10,
+        0,
+        0
+      ],
+      [
+        6,
+        0,
+        0
+      ]
+    ],
+    "auroc_binary": 0.7826,
+    "auprc_binary": 0.4484,
+    "sensitivity": 0.375,
+    "specificity": 0.9254,
+    "precision": 0.5455,
+    "f1_binary": 0.4444,
+    "threshold_used": 0.35
+  },
+  "reservenet_test_metrics": {
+    "n_samples": 83,
+    "accuracy": 0.8072,
+    "balanced_accuracy": 0.3333,
+    "macro_f1": 0.2978,
+    "weighted_f1": 0.7211,
+    "high_risk_recall": 0.0,
+    "watch_recall": 0.0,
+    "normal_recall": 1.0,
+    "auroc_macro": 0.403,
+    "ece": 0.1391,
+    "confusion_matrix": [
+      [
+        67,
+        0,
+        0
+      ],
+      [
+        10,
+        0,
+        0
+      ],
+      [
+        6,
+        0,
+        0
+      ]
+    ],
+    "auroc_binary": 0.4263,
+    "auprc_binary": 0.1868,
+    "sensitivity": 0.125,
+    "specificity": 0.8955,
+    "precision": 0.2222,
+    "f1_binary": 0.16,
+    "threshold_used": 0.35
+  },
+  "bootstrap_ci": {
+    "auroc_binary": {
+      "mean": 0.688162728970116,
+      "ci_lo": 0.5317027417027417,
+      "ci_hi": 0.8286296458882061
+    },
+    "sensitivity": {
+      "mean": 0.13386117315043855,
+      "ci_lo": 0.0,
+      "ci_hi": 0.3337500000000001
+    }
+  },
+  "cv5": {
+    "fold_auroc": [
+      0.4975,
+      0.5139,
+      0.3867,
+      0.4557,
+      0.5274
+    ],
+    "fold_f1": [
+      0.3291,
+      0.3796,
+      0.2982,
+      0.2963,
+      0.3287
+    ],
+    "fold_sens": [
+      0.6667,
+      0.5238,
+      0.4762,
+      0.4762,
+      0.5238
+    ],
+    "fold_spec": [
+      0.2222,
+      0.4667,
+      0.3258,
+      0.427,
+      0.4157
+    ],
+    "mean_auroc": 0.4763,
+    "std_auroc": 0.0508,
+    "mean_f1": 0.3264,
+    "std_f1": 0.0302,
+    "mean_sens": 0.5333,
+    "std_sens": 0.07,
+    "mean_spec": 0.3715,
+    "std_spec": 0.0877
+  },
+  "xgb_feature_importance": [
+    {
+      "feature": "std_fhr",
+      "importance": 0.0683
+    },
+    {
+      "feature": "decel_burden",
+      "importance": 0.0591
+    },
+    {
+      "feature": "decels_per_30min",
+      "importance": 0.0539
+    },
+    {
+      "feature": "duration_min",
+      "importance": 0.0505
+    },
+    {
+      "feature": "signal_quality",
+      "importance": 0.0477
+    },
+    {
+      "feature": "fetal_reserve_score",
+      "importance": 0.0466
+    },
+    {
+      "feature": "bradycardia_frac",
+      "importance": 0.046
+    },
+    {
+      "feature": "csr_frac",
+      "importance": 0.0446
+    },
+    {
+      "feature": "ltv_norm",
+      "importance": 0.0445
+    },
+    {
+      "feature": "missing_fhr",
+      "importance": 0.0439
+    },
+    {
+      "feature": "tachycardia_frac",
+      "importance": 0.0412
+    },
+    {
+      "feature": "n_contractions",
+      "importance": 0.041
+    }
+  ],
+  "expert_importances": {
+    "baseline_expert": [
+      {
+        "feature": "std_fhr",
+        "importance": 0.5266
+      },
+      {
+        "feature": "baseline_fhr",
+        "importance": 0.2127
+      },
+      {
+        "feature": "signal_quality",
+        "importance": 0.1913
+      },
+      {
+        "feature": "missing_fhr",
+        "importance": 0.1913
+      },
+      {
+        "feature": "bradycardia_frac",
+        "importance": 0.1453
+      },
+      {
+        "feature": "mean_fhr",
+        "importance": 0.1274
+      },
+      {
+        "feature": "tachycardia_frac",
+        "importance": 0.0456
+      }
+    ],
+    "variability_expert": [
+      {
+        "feature": "ltv_norm",
+        "importance": 0.1196
+      },
+      {
+        "feature": "ltv",
+        "importance": 0.1196
+      },
+      {
+        "feature": "stv_norm",
+        "importance": 0.0803
+      },
+      {
+        "feature": "stv",
+        "importance": 0.0803
+      }
+    ],
+    "event_expert": [
+      {
+        "feature": "mean_decel_depth",
+        "importance": 0.1166
+      },
+      {
+        "feature": "max_decel_depth",
+        "importance": 0.1158
+      },
+      {
+        "feature": "decel_burden",
+        "importance": 0.1113
+      },
+      {
+        "feature": "decels_per_30min",
+        "importance": 0.1019
+      },
+      {
+        "feature": "contractions_per_10min",
+        "importance": 0.0862
+      },
+      {
+        "feature": "duration_min",
+        "importance": 0.0832
+      },
+      {
+        "feature": "n_decels",
+        "importance": 0.0798
+      },
+      {
+        "feature": "mean_decel_dur_s",
+        "importance": 0.0717
+      }
+    ]
+  },
+  "architecture": {
+    "name": "ReserveNet \u2014 Domain-Partitioned Stacked Ensemble",
+    "layers": [
+      {
+        "name": "Expert A \u2014 FHR Baseline",
+        "model": "Logistic Regression (C=0.5, balanced)",
+        "features": [
+          "baseline_fhr",
+          "mean_fhr",
+          "std_fhr",
+          "tachycardia_frac",
+          "bradycardia_frac",
+          "missing_fhr",
+          "signal_quality"
+        ],
+        "rationale": "Captures FHR range, stability, and signal quality \u2014 independent physiological domain."
+      },
+      {
+        "name": "Expert B \u2014 Variability",
+        "model": "Logistic Regression (C=1.0, balanced)",
+        "features": [
+          "stv",
+          "ltv",
+          "stv_norm",
+          "ltv_norm"
+        ],
+        "rationale": "Short- and long-term variability reflect autonomic nervous system tone."
+      },
+      {
+        "name": "Expert C \u2014 Event Patterns",
+        "model": "Random Forest (200 trees, max_depth=5, balanced)",
+        "features": [
+          "n_decels",
+          "decels_per_30min",
+          "mean_decel_depth",
+          "max_decel_depth",
+          "mean_decel_dur_s",
+          "n_accels",
+          "accels_per_30min",
+          "n_contractions",
+          "contractions_per_10min",
+          "decel_burden",
+          "csr_frac"
+        ],
+        "rationale": "Deceleration burden, contraction stress response, and reactive patterns capture acute hypoxic stress."
+      },
+      {
+        "name": "Meta-Learner \u2014 ReserveFusionMLP",
+        "model": "MLP (96\u219248, ReLU, L2=0.05, early stopping on val)",
+        "features": [
+          "expert_A_probs",
+          "expert_B_probs",
+          "expert_C_probs",
+          "all_raw_features"
+        ],
+        "rationale": "Learns which expert to trust per case \u2014 gated clinical fusion."
+      },
+      {
+        "name": "Temperature Scaler",
+        "model": "Platt / Temperature Scaling (fit on validation only)",
+        "features": [
+          "meta_logits"
+        ],
+        "rationale": "Calibrates probabilities for clinical use. T fitted on validation; never on test."
+      }
+    ],
+    "label_policy": "pH < 7.05 \u2192 high_risk; 7.05\u20137.15 \u2192 watch; \u2265 7.15 \u2192 normal; no feature-derived labels",
+    "split_policy": "Record-level 70/15/15 \u2014 zero window leakage across patients",
+    "calibration_set": "validation (not test)"
+  }
+}

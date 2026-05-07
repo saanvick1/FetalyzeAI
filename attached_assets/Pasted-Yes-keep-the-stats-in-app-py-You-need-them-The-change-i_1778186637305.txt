@@ -1,0 +1,1136 @@
+Yes — keep the **stats in `app.py`**. You need them. The change is not “remove stats”; the change is:
+
+> **Make the stats come from real CTU-CHB/CTU-UHB record-level validation, not fetal_health.csv and not full-dataset training predictions.**
+
+You uploaded the CTU-CHB zip, and that should become the **primary dataset**. Your uploaded zip contains real `.hea` and `.dat` WFDB files, so your Replit app should load from that local extracted dataset first.
+
+---
+
+# 1. Main direction
+
+Your new model should be:
+
+## **FetalyzeAI ReserveNet**
+
+A unique but not overcomplicated architecture:
+
+```text
+Raw CTG waveform
+FHR + UC + missingness mask
+        ↓
+Small signal encoder
+CNN-TCN or feature-window encoder
+        ↓
+Clinical event engine
+deceleration burden + contraction stress response + fetal reserve
+        ↓
+Reliability-aware fusion
+XGBoost / LightGBM + small neural head
+        ↓
+Risk + uncertainty + explanation
+```
+
+This is more defensible than TOPQUA because the uniqueness comes from **clinical signal reasoning**, not complicated buzzword layers.
+
+The CTU-UHB dataset is appropriate because it contains **552 CTG recordings**, each with fetal heart rate, uterine contraction signal, and clinical details; recordings are up to 90 minutes long and sampled at **4 Hz**. ([physionet.org][1])
+
+---
+
+# 2. What to stop using
+
+Stop using `fetal_health.csv` as primary data.
+
+Right now, your repo still lists `fetal_health.csv` and the README describes UCI CTG as the primary dataset. The GitHub repo file list includes `fetal_health.csv`, `app.py`, `ctgdl_loader.py`, `ctgdl_features.py`, and `train_ctu_signal_model.py`. ([GitHub][2])
+
+Change the project identity from:
+
+> “Fetal health classification from 21 UCI features.”
+
+To:
+
+> **“CTU-CHB/CTU-UHB waveform-based CTG second reader.”**
+
+You can keep UCI/Kaggle only as an optional benchmark later, but your current app should not depend on it.
+
+---
+
+# 3. Smart training strategy that avoids bias and overfitting
+
+## A. Use record-level splitting
+
+Because each CTG record can produce many windows, never let windows from the same record appear in both train and test.
+
+Use this:
+
+```text
+record_id 1001 → train only
+record_id 1002 → validation only
+record_id 1003 → test only
+```
+
+Never this:
+
+```text
+1001 window 1 → train
+1001 window 2 → test
+```
+
+That would leak patient/record information.
+
+---
+
+## B. Use three splits, not two
+
+Use:
+
+```text
+70% train
+15% validation
+15% test
+```
+
+Train set:
+
+* model fitting
+* feature scaling
+* imputation
+* augmentation
+
+Validation set:
+
+* early stopping
+* threshold tuning
+* temperature scaling
+* choosing model weights
+
+Test set:
+
+* final metrics only
+
+Do **not** tune on the test set.
+
+---
+
+## C. Do not create labels from your own features
+
+This is very important.
+
+Your current `train_ctu_signal_model.py` uses pH/Apgar first, but if those are missing, it falls back to fetal reserve score and deceleration burden to assign labels. That creates circular logic because the same features are then used to train the model.
+
+Do not do this:
+
+```python
+if frs < 35 or dbi > 200:
+    return 2
+```
+
+That means the model is partly learning labels that were created from its own input features.
+
+Instead, labels should come only from clinical outcomes:
+
+```python
+def assign_risk_label(row):
+    ph = row.get("ph", np.nan)
+    apgar1 = row.get("apgar1", np.nan)
+    apgar5 = row.get("apgar5", np.nan)
+    base_deficit = row.get("base_deficit", np.nan)
+
+    if not np.isnan(ph):
+        if ph < 7.05:
+            return 2   # high risk
+        if ph < 7.15:
+            return 1   # watch
+        return 0       # low risk
+
+    if not np.isnan(base_deficit):
+        if base_deficit >= 12:
+            return 2
+        if base_deficit >= 8:
+            return 1
+
+    if not np.isnan(apgar1):
+        if apgar1 < 7:
+            return 2
+        if apgar1 <= 7:
+            return 1
+
+    return -1  # unknown, exclude from supervised training
+```
+
+Then drop unknown labels:
+
+```python
+feat_df = feat_df[feat_df["risk_label"] >= 0].copy()
+```
+
+This makes your model much more honest.
+
+---
+
+# 4. Unique architecture: like TOPQUA, but cleaner
+
+Do not use the old TOPQUA style as the final architecture. It is too easy for someone to say:
+
+> “Why quantum? Why Riemannian? Why KAN? Did each part actually help?”
+
+Instead use a unique architecture with three understandable modules.
+
+## FetalyzeAI ReserveNet architecture
+
+```text
+Module 1: SignalPulse Encoder
+Learns temporal CTG patterns from FHR + UC windows.
+
+Module 2: Reserve Engine
+Computes fetal reserve, deceleration burden, contraction stress response, and signal quality.
+
+Module 3: Reliability Fusion Head
+Combines waveform evidence + clinical features + uncertainty.
+```
+
+That still sounds unique, but it is much easier to defend.
+
+---
+
+## Module 1: SignalPulse Encoder
+
+Use a small CNN-TCN.
+
+```python
+class SignalPulseEncoder(nn.Module):
+    def __init__(self, in_channels=3, hidden=48):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv1d(in_channels, 32, kernel_size=9, padding=4),
+            nn.BatchNorm1d(32),
+            nn.GELU(),
+            nn.Dropout(0.15),
+
+            nn.Conv1d(32, hidden, kernel_size=7, padding=3, dilation=1),
+            nn.BatchNorm1d(hidden),
+            nn.GELU(),
+
+            nn.Conv1d(hidden, hidden, kernel_size=7, padding=6, dilation=2),
+            nn.BatchNorm1d(hidden),
+            nn.GELU(),
+
+            nn.Conv1d(hidden, hidden, kernel_size=7, padding=12, dilation=4),
+            nn.BatchNorm1d(hidden),
+            nn.GELU(),
+
+            nn.AdaptiveAvgPool1d(1)
+        )
+
+    def forward(self, x):
+        # x shape: batch, channels, time
+        return self.net(x).squeeze(-1)
+```
+
+Input channels:
+
+```text
+channel 1: FHR
+channel 2: UC
+channel 3: missingness mask
+```
+
+Keep this small. Do not use a huge transformer yet.
+
+---
+
+## Module 2: Reserve Engine
+
+This comes from `ctgdl_features.py`.
+
+Keep these:
+
+* baseline FHR
+* short-term variability
+* long-term variability
+* accelerations
+* decelerations
+* contraction count
+* deceleration after contraction
+* recovery time
+* signal quality
+* fetal reserve score
+* deceleration burden index
+* contraction stress response
+
+The CTU annotation dataset can later help here because it provides annotations for the same 552 CTG recordings, including bradycardia, tachycardia, accelerations, decelerations, uterine contractions, and deceleration classes. ([PMC][3])
+
+---
+
+## Module 3: Reliability Fusion Head
+
+Use a small MLP that combines:
+
+```text
+signal embedding
++
+engineered clinical features
++
+XGBoost probabilities
++
+signal quality score
+```
+
+Example:
+
+```python
+class ReserveFusionHead(nn.Module):
+    def __init__(self, signal_dim, feature_dim, n_classes=3):
+        super().__init__()
+
+        self.gate = nn.Sequential(
+            nn.Linear(signal_dim + feature_dim + n_classes, 64),
+            nn.GELU(),
+            nn.Linear(64, 3),
+            nn.Sigmoid()
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Linear(signal_dim + feature_dim + n_classes + 3, 96),
+            nn.BatchNorm1d(96),
+            nn.GELU(),
+            nn.Dropout(0.25),
+            nn.Linear(96, 48),
+            nn.GELU(),
+            nn.Dropout(0.15),
+            nn.Linear(48, n_classes)
+        )
+
+    def forward(self, signal_emb, features, xgb_probs):
+        fused = torch.cat([signal_emb, features, xgb_probs], dim=1)
+        gate = self.gate(fused)
+        out = self.classifier(torch.cat([fused, gate], dim=1))
+        return out, gate
+```
+
+This gives you a unique “gated clinical fusion” architecture without overcomplication.
+
+---
+
+# 5. File-by-file changes for Replit
+
+## 1. `ctgdl_loader.py`
+
+### Current issue
+
+It has a synthetic fallback. That is okay for testing, but not for your final training.
+
+Your loader currently includes CTU-UHB PhysioNet loading, Zenodo CTGDL CSV loading, and synthetic fallback. The repo code explicitly defines the CTU-UHB source, Zenodo CTGDL files, and a synthetic CTU-UHB fallback. ([GitHub][4])
+
+### Change it to load your uploaded ZIP first
+
+Add this function:
+
+```python
+from pathlib import Path
+import zipfile
+import shutil
+
+LOCAL_CTU_ZIP = Path("attached_assets/ctu-chb-intrapartum-cardiotocography-database-1.0.0.zip")
+LOCAL_CTU_DIR = Path("data/ctu-chb-intrapartum-cardiotocography-database-1.0.0")
+
+def ensure_local_ctu_dataset():
+    """
+    Replit-first loader:
+    1. Use uploaded CTU zip from attached_assets/
+    2. Extract into data/
+    3. Fail clearly if missing
+    """
+    if LOCAL_CTU_DIR.exists() and any(LOCAL_CTU_DIR.glob("*.hea")):
+        return LOCAL_CTU_DIR
+
+    if not LOCAL_CTU_ZIP.exists():
+        raise RuntimeError(
+            "CTU-CHB zip not found. Upload it to attached_assets/ "
+            "as ctu-chb-intrapartum-cardiotocography-database-1.0.0.zip"
+        )
+
+    LOCAL_CTU_DIR.parent.mkdir(exist_ok=True)
+
+    with zipfile.ZipFile(LOCAL_CTU_ZIP, "r") as zf:
+        zf.extractall(LOCAL_CTU_DIR.parent)
+
+    if not any(LOCAL_CTU_DIR.glob("*.hea")):
+        raise RuntimeError("CTU dataset extraction failed: no .hea files found.")
+
+    return LOCAL_CTU_DIR
+```
+
+Then add a local WFDB loader:
+
+```python
+def load_ctu_uhb_local(max_records=552, verbose=True):
+    import wfdb
+
+    data_dir = ensure_local_ctu_dataset()
+    hea_files = sorted(data_dir.glob("*.hea"))[:max_records]
+
+    records = []
+
+    for hea in hea_files:
+        rid = hea.stem
+        try:
+            rec = wfdb.rdrecord(str(data_dir / rid))
+
+            sig_names = [s.upper() for s in rec.sig_name]
+            fhr_idx = next((i for i, s in enumerate(sig_names) if "FHR" in s), None)
+            uc_idx = next((i for i, s in enumerate(sig_names) if "UC" in s or "TOCO" in s), None)
+
+            if fhr_idx is None:
+                continue
+
+            fhr = rec.p_signal[:, fhr_idx].astype(float)
+            uc = rec.p_signal[:, uc_idx].astype(float) if uc_idx is not None else np.full_like(fhr, np.nan)
+
+            fhr[(fhr <= 0) | (fhr > 300)] = np.nan
+            uc[uc < 0] = np.nan
+
+            meta = _parse_ctu_uhb_header(rec)
+            ph = float(meta.get("ph", np.nan))
+
+            ph_label = (
+                "acidosis" if not np.isnan(ph) and ph < PH_ACIDOSIS else
+                "borderline" if not np.isnan(ph) and ph < PH_BORDERLINE else
+                "normal" if not np.isnan(ph) else
+                "unknown"
+            )
+
+            quality = float(np.mean(~np.isnan(fhr)))
+            duration_min = len(fhr) / (FS * 60)
+
+            records.append(
+                CTGRecord(
+                    record_id=rid,
+                    source="CTU-LOCAL",
+                    fhr=fhr,
+                    uc=uc,
+                    fs=FS,
+                    duration_min=duration_min,
+                    signal_quality=quality,
+                    ph=ph,
+                    base_deficit=float(meta.get("base_deficit", np.nan)),
+                    apgar1=float(meta.get("apgar1", np.nan)),
+                    apgar5=float(meta.get("apgar5", np.nan)),
+                    ph_label=ph_label,
+                    gestational_age=float(meta.get("gestational_age", np.nan)),
+                    birth_weight=float(meta.get("birth_weight", np.nan)),
+                    delivery_type=str(meta.get("delivery_type", "unknown")),
+                )
+            )
+
+        except Exception as e:
+            if verbose:
+                print(f"Skipped {rid}: {e}")
+
+    if verbose:
+        print(f"Loaded {len(records)} real CTU records from local ZIP.")
+
+    if len(records) == 0:
+        raise RuntimeError("No real CTU records loaded. Synthetic fallback is not allowed.")
+
+    return records
+```
+
+### Important
+
+Change synthetic behavior:
+
+```python
+force_synthetic=False
+```
+
+should mean:
+
+```python
+if no real data:
+    raise RuntimeError
+```
+
+Not:
+
+```python
+make_synthetic_ctu_uhb()
+```
+
+Synthetic data should only be used in a separate demo script, never in primary training.
+
+---
+
+## 2. `ctgdl_features.py`
+
+### Keep this file
+
+This is one of your best files. It already has the right idea: FHR features, deceleration detection, contraction analysis, fetal reserve, deceleration burden, and signal quality. The raw file describes exactly this feature engine. ([GitHub][5])
+
+### Add window-level feature extraction
+
+Right now you need record-level and timeline-level features.
+
+Add:
+
+```python
+def extract_windowed_features(record, window_sec=300, step_sec=150):
+    fs = int(record.fs)
+    win = window_sec * fs
+    step = step_sec * fs
+
+    rows = []
+
+    for start in range(0, max(len(record.fhr) - win + 1, 1), step):
+        end = min(start + win, len(record.fhr))
+
+        sub_record = type(record)(
+            record_id=record.record_id,
+            source=record.source,
+            fhr=record.fhr[start:end],
+            uc=record.uc[start:end],
+            fs=record.fs,
+            duration_min=(end - start) / (record.fs * 60),
+            signal_quality=float(np.mean(~np.isnan(record.fhr[start:end]))),
+            ph=record.ph,
+            base_deficit=record.base_deficit,
+            apgar1=record.apgar1,
+            apgar5=record.apgar5,
+            ph_label=record.ph_label,
+            annotations=record.annotations,
+            gestational_age=record.gestational_age,
+            birth_weight=record.birth_weight,
+            delivery_type=record.delivery_type,
+            nicu_admission=record.nicu_admission,
+        )
+
+        feats = extract_ctg_features(sub_record)
+        feats["record_id"] = record.record_id
+        feats["window_start_s"] = start / fs
+        feats["window_end_s"] = end / fs
+        rows.append(feats)
+
+    return pd.DataFrame(rows)
+```
+
+Then add trend features:
+
+```python
+def add_timeline_trends(window_df):
+    window_df = window_df.sort_values(["record_id", "window_start_s"]).copy()
+
+    trend_cols = [
+        "fetal_reserve_score",
+        "deceleration_burden_index",
+        "n_decels",
+        "stv",
+        "signal_quality"
+    ]
+
+    for col in trend_cols:
+        if col in window_df.columns:
+            window_df[f"{col}_delta"] = window_df.groupby("record_id")[col].diff().fillna(0)
+            window_df[f"{col}_last3_mean"] = (
+                window_df.groupby("record_id")[col]
+                .rolling(3, min_periods=1)
+                .mean()
+                .reset_index(level=0, drop=True)
+            )
+
+    return window_df
+```
+
+This makes FetalyzeAI unique because it becomes **timeline-aware**, not just one static classifier.
+
+---
+
+## 3. `train_ctu_signal_model.py`
+
+This becomes your main training file.
+
+### Current issue 1: synthetic fallback
+
+Your current file prints a note when synthetic fallback is used. It should not do that for the main model. The raw training file currently imports `make_synthetic_ctu_uhb` and includes logic to augment with synthetic records if class variety is insufficient. ([GitHub][6])
+
+Remove:
+
+```python
+from ctgdl_loader import make_synthetic_ctu_uhb
+```
+
+Remove all augmentation with synthetic data.
+
+Use:
+
+```python
+from ctgdl_loader import load_ctu_uhb_local
+```
+
+Then:
+
+```python
+records = load_ctu_uhb_local(max_records=552, verbose=True)
+```
+
+---
+
+### Current issue 2: test set used for early stopping
+
+Your current MLP ensemble checks performance on `X_te` during training and stores the best state based on test performance. That leaks test data.
+
+Instead create validation split:
+
+```python
+idx_trainval, idx_test = train_test_split(
+    np.arange(len(X_raw)),
+    test_size=0.15,
+    stratify=y_raw,
+    random_state=42
+)
+
+idx_train, idx_val = train_test_split(
+    idx_trainval,
+    test_size=0.1765,
+    stratify=y_raw[idx_trainval],
+    random_state=42
+)
+```
+
+This gives approximately:
+
+```text
+70% train
+15% validation
+15% test
+```
+
+Fit imputer/scaler only on train:
+
+```python
+imputer = SimpleImputer(strategy="median")
+scaler = RobustScaler()
+
+X_train = scaler.fit_transform(imputer.fit_transform(X_raw[idx_train]))
+X_val = scaler.transform(imputer.transform(X_raw[idx_val]))
+X_test = scaler.transform(imputer.transform(X_raw[idx_test]))
+
+y_train = y_raw[idx_train]
+y_val = y_raw[idx_val]
+y_test = y_raw[idx_test]
+```
+
+Use validation for early stopping and temperature scaling.
+
+---
+
+### Current issue 3: temperature scaling on test set
+
+Your current training file fits temperature scaling on test logits. The raw file says “Fit temperature on test logits.” ([GitHub][6])
+
+Change:
+
+```python
+temp_scaler = TemperatureScaler().fit(mean_logits_te, y_te)
+```
+
+To:
+
+```python
+temp_scaler = TemperatureScaler().fit(mean_logits_val, y_val)
+```
+
+Then apply to test:
+
+```python
+test_probs_cal = temp_scaler.scale(test_probs_raw)
+```
+
+---
+
+### Current issue 4: no true raw-signal branch yet
+
+Your current `train_ctu_signal_model.py` says the architecture is raw FHR + UC with CNN-TCN, but the visible code mainly trains XGBoost and MLP on extracted features. ([GitHub][6])
+
+You have two choices:
+
+## Simple Replit-friendly version
+
+Use feature engine + XGBoost + small MLP only.
+
+This is easier and should run on Replit.
+
+```text
+CTU raw signal
+↓
+feature extraction
+↓
+XGBoost + MLP ensemble
+↓
+calibrated risk + uncertainty
+```
+
+## Better version
+
+Add small CNN-TCN later.
+
+For now, I recommend the simple version first because Replit CPU may be slow.
+
+---
+
+## 4. Create a new file: `reservenet_model.py`
+
+Put all model architecture in one file.
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class ReserveFusionMLP(nn.Module):
+    def __init__(self, n_features, n_classes=3, hidden=96):
+        super().__init__()
+
+        self.feature_encoder = nn.Sequential(
+            nn.Linear(n_features + n_classes, hidden),
+            nn.BatchNorm1d(hidden),
+            nn.GELU(),
+            nn.Dropout(0.25),
+            nn.Linear(hidden, 48),
+            nn.GELU(),
+            nn.Dropout(0.15),
+        )
+
+        self.reserve_head = nn.Linear(48, 1)
+        self.class_head = nn.Linear(48, n_classes)
+
+    def forward(self, features, xgb_probs):
+        x = torch.cat([features, xgb_probs], dim=1)
+        h = self.feature_encoder(x)
+        logits = self.class_head(h)
+        reserve_pred = torch.sigmoid(self.reserve_head(h)) * 100
+        return logits, reserve_pred
+```
+
+This is your **unique architecture file**.
+
+It is not overcomplicated. It outputs:
+
+* risk class
+* fetal reserve estimate
+
+Later you can add `SignalPulseEncoder` here.
+
+---
+
+## 5. Create a new file: `metrics_utils.py`
+
+Move metrics out of `app.py`.
+
+```python
+import numpy as np
+from sklearn.metrics import (
+    accuracy_score, balanced_accuracy_score, f1_score,
+    recall_score, precision_score, roc_auc_score,
+    average_precision_score, confusion_matrix, brier_score_loss
+)
+from sklearn.preprocessing import label_binarize
+
+def expected_calibration_error(y_true, probs, n_bins=10):
+    preds = probs.argmax(axis=1)
+    conf = probs.max(axis=1)
+    correct = (preds == y_true).astype(float)
+
+    ece = 0.0
+    bins = np.linspace(0, 1, n_bins + 1)
+
+    for i in range(n_bins):
+        mask = (conf >= bins[i]) & (conf < bins[i + 1])
+        if mask.sum() > 0:
+            ece += mask.mean() * abs(correct[mask].mean() - conf[mask].mean())
+
+    return float(ece)
+
+def compute_all_metrics(y_true, probs):
+    preds = probs.argmax(axis=1)
+    y_bin = label_binarize(y_true, classes=[0, 1, 2])
+
+    return {
+        "accuracy": float(accuracy_score(y_true, preds)),
+        "balanced_accuracy": float(balanced_accuracy_score(y_true, preds)),
+        "macro_f1": float(f1_score(y_true, preds, average="macro", zero_division=0)),
+        "weighted_f1": float(f1_score(y_true, preds, average="weighted", zero_division=0)),
+        "high_risk_recall": float(recall_score(y_true, preds, labels=[2], average="macro", zero_division=0)),
+        "watch_recall": float(recall_score(y_true, preds, labels=[1], average="macro", zero_division=0)),
+        "ece": expected_calibration_error(y_true, probs),
+        "confusion_matrix": confusion_matrix(y_true, preds).tolist(),
+    }
+```
+
+Then both training and app use the same metrics.
+
+---
+
+## 6. Create a new file: `train_reservenet_ctu.py`
+
+This should replace `train_fetalyze_v3.py` and `train_topqua_sensitivity_optimized.py` for the primary model.
+
+High-level file structure:
+
+```python
+from ctgdl_loader import load_ctu_uhb_local
+from ctgdl_features import extract_features_batch
+from reservenet_model import ReserveFusionMLP
+from metrics_utils import compute_all_metrics
+
+def main():
+    records = load_ctu_uhb_local()
+    feat_df = extract_features_batch(records)
+
+    feat_df["risk_label"] = feat_df.apply(assign_risk_label, axis=1)
+    feat_df = feat_df[feat_df["risk_label"] >= 0].copy()
+
+    # record-level split
+    # train XGBoost
+    # train ReserveFusionMLP using validation, not test
+    # calibrate using validation
+    # evaluate once on test
+    # save artifacts
+```
+
+Output files:
+
+```text
+models/ctu_reservenet.pkl
+results/ctu_reservenet_results.json
+results/ctu_case_predictions.csv
+results/ctu_window_timeline.csv
+```
+
+---
+
+## 7. `app.py`
+
+Keep the stats, but change the data source.
+
+### Current issue
+
+Your current `app.py` loads `fetal_health.csv` directly. The raw app file shows `load_data()` uses `fetal_health.csv`, and if missing, downloads a fetal health CSV from GitHub. ([GitHub][7])
+
+Remove or disable that behavior.
+
+Replace:
+
+```python
+@st.cache_data
+def load_data():
+    data_path = 'fetal_health.csv'
+    ...
+```
+
+With:
+
+```python
+@st.cache_data
+def load_ctu_results():
+    with open("results/ctu_reservenet_results.json", "r") as f:
+        return json.load(f)
+
+@st.cache_data
+def load_ctu_predictions():
+    return pd.read_csv("results/ctu_case_predictions.csv")
+
+@st.cache_data
+def load_ctu_timeline():
+    return pd.read_csv("results/ctu_window_timeline.csv")
+```
+
+---
+
+### New app tabs
+
+Keep stats, but organize them better:
+
+```python
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "Case Review",
+    "CTG Timeline",
+    "Model Performance",
+    "Feature & Error Analysis",
+    "Safety Notes"
+])
+```
+
+## Tab 1: Case Review
+
+Show:
+
+```text
+Overall Status
+Risk Level
+Confidence
+Uncertainty
+Fetal Reserve Score
+Deceleration Burden
+Contraction Stress Response
+Signal Quality
+```
+
+## Tab 2: CTG Timeline
+
+Show time-window risk.
+
+```text
+0–5 min: Low
+5–10 min: Watch
+10–15 min: Watch
+15–20 min: High
+```
+
+## Tab 3: Model Performance
+
+This is where your stats go.
+
+Show:
+
+* accuracy
+* balanced accuracy
+* macro-F1
+* high-risk recall
+* watch recall
+* confusion matrix
+* AUROC/AUPRC if available
+* calibration error
+* uncertainty coverage
+* bootstrap confidence intervals
+
+## Tab 4: Feature & Error Analysis
+
+Show:
+
+* feature importance
+* false negatives
+* false positives
+* worst calibrated cases
+* poor-signal cases
+
+## Tab 5: Safety Notes
+
+Show:
+
+> FetalyzeAI is a research-stage CTG second-reader. It does not diagnose fetal distress, recommend treatment, or replace clinicians.
+
+---
+
+# 8. `replit.md`
+
+Update the Replit instructions.
+
+Use this:
+
+```markdown
+# FetalyzeAI Replit Setup
+
+## Primary dataset
+
+Upload:
+
+attached_assets/ctu-chb-intrapartum-cardiotocography-database-1.0.0.zip
+
+This project uses CTU-CHB / CTU-UHB as the primary dataset.
+
+## Install
+
+pip install streamlit numpy pandas scikit-learn xgboost torch wfdb matplotlib seaborn imbalanced-learn
+
+## Train
+
+python train_reservenet_ctu.py
+
+Expected outputs:
+
+- models/ctu_reservenet.pkl
+- results/ctu_reservenet_results.json
+- results/ctu_case_predictions.csv
+- results/ctu_window_timeline.csv
+
+## Run app
+
+streamlit run app.py --server.port 5000
+
+## Important
+
+Synthetic data is not allowed for primary training.
+If CTU files are missing, training must stop with RuntimeError.
+```
+
+---
+
+# 9. `pyproject.toml` or requirements
+
+Make sure these are installed:
+
+```toml
+dependencies = [
+    "streamlit",
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "xgboost",
+    "torch",
+    "wfdb",
+    "matplotlib",
+    "seaborn",
+    "imbalanced-learn"
+]
+```
+
+If Replit struggles with PyTorch, first ship the XGBoost + feature-engine version. Then add neural fusion later.
+
+---
+
+# 10. What to do with old files
+
+## `train_fetalyze_v3.py`
+
+Do not use this for the main model anymore.
+
+Rename:
+
+```text
+legacy_train_fetalyze_v3.py
+```
+
+Or move to:
+
+```text
+archive/train_fetalyze_v3.py
+```
+
+## `train_topqua_sensitivity_optimized.py`
+
+Same thing.
+
+Rename:
+
+```text
+archive/train_topqua_sensitivity_optimized.py
+```
+
+Keep it only as a historical experiment.
+
+## `retrain_v3_predictor.py`
+
+Replace with:
+
+```text
+train_reservenet_ctu.py
+```
+
+## `fetal_health_analysis.py`
+
+Either remove it from the Replit run flow or rename it:
+
+```text
+archive/fetal_health_analysis.py
+```
+
+---
+
+# 11. Integration map
+
+Your final Replit project should look like this:
+
+```text
+FetalyzeAI/
+├── app.py
+├── ctgdl_loader.py
+├── ctgdl_features.py
+├── reservenet_model.py
+├── metrics_utils.py
+├── train_reservenet_ctu.py
+├── attached_assets/
+│   └── ctu-chb-intrapartum-cardiotocography-database-1.0.0.zip
+├── data/
+│   └── ctu-chb-intrapartum-cardiotocography-database-1.0.0/
+├── models/
+│   └── ctu_reservenet.pkl
+├── results/
+│   ├── ctu_reservenet_results.json
+│   ├── ctu_case_predictions.csv
+│   └── ctu_window_timeline.csv
+├── archive/
+│   ├── train_fetalyze_v3.py
+│   ├── train_topqua_sensitivity_optimized.py
+│   └── retrain_v3_predictor.py
+└── replit.md
+```
+
+---
+
+# 12. What the app should say
+
+Use this positioning:
+
+> **FetalyzeAI ReserveNet is a research-stage CTG second-reader trained on CTU-CHB/CTU-UHB waveform data. It analyzes fetal heart rate, uterine contractions, deceleration burden, contraction stress response, fetal reserve, signal quality, and uncertainty to support clinician review.**
+
+Do not say:
+
+> “clinically accurate decisions.”
+
+Say:
+
+> “risk-stratified decision support requiring clinician review.”
+
+---
+
+# 13. The exact smart training pipeline
+
+Use this flow:
+
+```text
+1. Load uploaded CTU ZIP
+2. Verify real .hea/.dat files exist
+3. Load FHR + UC signals
+4. Extract record-level and window-level CTG features
+5. Assign labels from pH/Apgar/base deficit only
+6. Split by record_id
+7. Fit imputer/scaler on training records only
+8. Train regularized XGBoost
+9. Train small ReserveFusionMLP using validation set
+10. Calibrate probabilities on validation set
+11. Evaluate once on untouched test set
+12. Save model artifacts and result JSON
+13. App loads saved results and displays stats
+```
+
+That gives you:
+
+* stats in `app.py`
+* no fetal_health dependency
+* less overfitting
+* no synthetic primary training
+* actual CTU waveform use
+* unique but defensible architecture
+
+---
+
+# 14. The most important changes
+
+Do these first:
+
+1. **Make `ctgdl_loader.py` load your uploaded CTU ZIP locally.**
+2. **Remove synthetic augmentation from `train_ctu_signal_model.py`.**
+3. **Remove fetal reserve/deceleration burden from label creation.**
+4. **Add train/validation/test split.**
+5. **Use validation, not test, for early stopping and temperature scaling.**
+6. **Save CTU results into `results/ctu_reservenet_results.json`.**
+7. **Update `app.py` to load CTU results instead of `fetal_health.csv`.**
+
+That will make FetalyzeAI much stronger, cleaner, and more believable.
+
+[1]: https://www.physionet.org/physiobank/database/ctu-uhb-ctgdb/?utm_source=chatgpt.com "CTU-CHB Intrapartum Cardiotocography Database v1.0.0"
+[2]: https://github.com/saanvick1/FetalyzeAI "GitHub - saanvick1/FetalyzeAI: An Uncertainty-Aware Hybrid Intelligence Framework for Reliable Fetal Health Classification Using Cardiotocography — ISEF Research Project · GitHub"
+[3]: https://pmc.ncbi.nlm.nih.gov/articles/PMC7256311/?utm_source=chatgpt.com "Annotation dataset of the cardiotocographic recordings ... - PMC"
+[4]: https://raw.githubusercontent.com/saanvick1/FetalyzeAI/main/ctgdl_loader.py "raw.githubusercontent.com"
+[5]: https://raw.githubusercontent.com/saanvick1/FetalyzeAI/main/ctgdl_features.py "raw.githubusercontent.com"
+[6]: https://raw.githubusercontent.com/saanvick1/FetalyzeAI/main/train_ctu_signal_model.py "raw.githubusercontent.com"
+[7]: https://raw.githubusercontent.com/saanvick1/FetalyzeAI/main/app.py "raw.githubusercontent.com"
