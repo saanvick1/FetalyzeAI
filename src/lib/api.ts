@@ -1,4 +1,5 @@
 import { EDGE_URL, EDGE_HEADERS } from './supabase'
+import { predictLocally } from './predictor'
 import type { FeatureValues } from './features'
 
 export interface PredictionResult {
@@ -18,6 +19,10 @@ export async function predict(
   features: FeatureValues,
   sessionId: string
 ): Promise<PredictionResult> {
+  if (!EDGE_URL || !EDGE_HEADERS) {
+    return predictLocally(features)
+  }
+
   const res = await fetch(EDGE_URL, {
     method: 'POST',
     headers: EDGE_HEADERS,

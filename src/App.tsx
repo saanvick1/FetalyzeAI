@@ -46,8 +46,8 @@ export default function App() {
     }
   }, [values, sessionId])
 
-  // Load recent history from Supabase on mount
   useEffect(() => {
+    if (!supabase) return
     supabase
       .from('predictions')
       .select('*')
