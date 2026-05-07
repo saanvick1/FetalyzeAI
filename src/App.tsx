@@ -4,8 +4,6 @@ import { PredictionForm } from './components/PredictionForm'
 import { ResultPanel } from './components/ResultPanel'
 import { HistoryPanel } from './components/HistoryPanel'
 import { DisclaimerBanner } from './components/DisclaimerBanner'
-import { ResearchPanel } from './components/ResearchPanel'
-import { TuningPanel } from './components/TuningPanel'
 import { ReserveNetPanel } from './components/ReserveNetPanel'
 import { ReserveNetPredictorPanel } from './components/ReserveNetPredictorPanel'
 import { predict, type PredictionResult } from './lib/api'
@@ -33,7 +31,7 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [history, setHistory] = useState<HistoryEntry[]>([])
-  const [activeTab, setActiveTab] = useState<'predict' | 'history' | 'research' | 'tuning' | 'reservenet' | 'reservenet-predict'>('predict')
+  const [activeTab, setActiveTab] = useState<'predict' | 'history' | 'reservenet' | 'reservenet-predict'>('predict')
   const sessionId = getSessionId()
 
   const handlePredict = useCallback(async () => {
@@ -86,9 +84,7 @@ export default function App() {
       <div className="app__tabs">
         <button className={`app__tab ${activeTab === 'predict' ? 'app__tab--active' : ''}`} onClick={() => setActiveTab('predict')}>CTG Analysis</button>
         <button className={`app__tab ${activeTab === 'history' ? 'app__tab--active' : ''}`} onClick={() => setActiveTab('history')}>History{history.length > 0 && <span className="app__tab-badge">{history.length}</span>}</button>
-        <button className={`app__tab ${activeTab === 'research' ? 'app__tab--active' : ''}`} onClick={() => setActiveTab('research')}>Model &amp; Evidence</button>
-        <button className={`app__tab ${activeTab === 'tuning' ? 'app__tab--active' : ''}`} onClick={() => setActiveTab('tuning')}>Auto-Tune</button>
-        <button className={`app__tab ${activeTab === 'reservenet' ? 'app__tab--active' : ''}`} onClick={() => setActiveTab('reservenet')}>ReserveNet</button>
+        <button className={`app__tab ${activeTab === 'reservenet' ? 'app__tab--active' : ''}`} onClick={() => setActiveTab('reservenet')}>Model Performance</button>
         <button className={`app__tab ${activeTab === 'reservenet-predict' ? 'app__tab--active' : ''}`} onClick={() => setActiveTab('reservenet-predict')}>ReserveNet Predictor</button>
       </div>
 
@@ -104,14 +100,10 @@ export default function App() {
             setResult(entry)
             setActiveTab('predict')
           }} />
-        ) : activeTab === 'tuning' ? (
-          <TuningPanel />
-        ) : activeTab === 'reservenet' ? (
-          <ReserveNetPanel />
         ) : activeTab === 'reservenet-predict' ? (
           <ReserveNetPredictorPanel />
         ) : (
-          <ResearchPanel />
+          <ReserveNetPanel />
         )}
       </main>
     </div>
