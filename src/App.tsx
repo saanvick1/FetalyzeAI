@@ -84,75 +84,34 @@ export default function App() {
       <DisclaimerBanner />
 
       <div className="app__tabs">
-        <button
-          className={`app__tab ${activeTab === 'predict' ? 'app__tab--active' : ''}`}
-          onClick={() => setActiveTab('predict')}
-        >
-          CTG Analysis
-        </button>
-        <button
-          className={`app__tab ${activeTab === 'history' ? 'app__tab--active' : ''}`}
-          onClick={() => setActiveTab('history')}
-        >
-          History
-          {history.length > 0 && <span className="app__tab-badge">{history.length}</span>}
-        </button>
-        <button
-          className={`app__tab ${activeTab === 'research' ? 'app__tab--active' : ''}`}
-          onClick={() => setActiveTab('research')}
-        >
-          Model &amp; Evidence
-        </button>
-        <button
-          className={`app__tab ${activeTab === 'tuning' ? 'app__tab--active' : ''}`}
-          onClick={() => setActiveTab('tuning')}
-        >
-          Auto-Tune
-        </button>
-        <button
-          className={`app__tab ${activeTab === 'reservenet' ? 'app__tab--active' : ''}`}
-          onClick={() => setActiveTab('reservenet')}
-        >
-          ReserveNet
-        </button>
-        <button
-          className={`app__tab ${activeTab === 'reservenet-predict' ? 'app__tab--active' : ''}`}
-          onClick={() => setActiveTab('reservenet-predict')}
-        >
-          ReserveNet Predictor
-        </button>
+        <button className={`app__tab ${activeTab === 'predict' ? 'app__tab--active' : ''}`} onClick={() => setActiveTab('predict')}>CTG Analysis</button>
+        <button className={`app__tab ${activeTab === 'history' ? 'app__tab--active' : ''}`} onClick={() => setActiveTab('history')}>History{history.length > 0 && <span className="app__tab-badge">{history.length}</span>}</button>
+        <button className={`app__tab ${activeTab === 'research' ? 'app__tab--active' : ''}`} onClick={() => setActiveTab('research')}>Model &amp; Evidence</button>
+        <button className={`app__tab ${activeTab === 'tuning' ? 'app__tab--active' : ''}`} onClick={() => setActiveTab('tuning')}>Auto-Tune</button>
+        <button className={`app__tab ${activeTab === 'reservenet' ? 'app__tab--active' : ''}`} onClick={() => setActiveTab('reservenet')}>ReserveNet</button>
+        <button className={`app__tab ${activeTab === 'reservenet-predict' ? 'app__tab--active' : ''}`} onClick={() => setActiveTab('reservenet-predict')}>ReserveNet Predictor</button>
       </div>
 
       <main className="app__main">
         {activeTab === 'predict' ? (
           <div className="app__layout">
-            <PredictionForm
-              values={values}
-              onChange={setValues}
-              onSubmit={handlePredict}
-              loading={loading}
-            />
+            <PredictionForm values={values} onChange={setValues} onSubmit={handlePredict} loading={loading} />
             <ResultPanel result={result} loading={loading} error={error} />
           </div>
+        ) : activeTab === 'history' ? (
+          <HistoryPanel history={history} onSelect={(entry) => {
+            setValues(entry.features)
+            setResult(entry)
+            setActiveTab('predict')
+          }} />
+        ) : activeTab === 'tuning' ? (
+          <TuningPanel />
+        ) : activeTab === 'reservenet' ? (
+          <ReserveNetPanel />
+        ) : activeTab === 'reservenet-predict' ? (
+          <ReserveNetPredictorPanel />
         ) : (
-          activeTab === 'history' ? (
-            <HistoryPanel
-              history={history}
-              onSelect={(entry) => {
-                setValues(entry.features)
-                setResult(entry)
-                setActiveTab('predict')
-              }}
-            />
-          ) : activeTab === 'tuning' ? (
-            <TuningPanel />
-          ) : activeTab === 'reservenet' ? (
-            <ReserveNetPanel />
-          ) : activeTab === 'reservenet-predict' ? (
-            <ReserveNetPredictorPanel />
-          ) : (
-            <ResearchPanel />
-          )
+          <ResearchPanel />
         )}
       </main>
     </div>
