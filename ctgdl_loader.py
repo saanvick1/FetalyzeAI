@@ -1,31 +1,39 @@
 """
-CTGDL Multi-Source CTG Dataset Loader
-======================================
-Integrates three real CTG datasets as described in:
-  Fridman et al. (2025) "CTGDL: A Multi-source cardiotocography dataset for
-  fetal stress prediction and CTG analysis" — SSRN 6027919
+FetalyzeAI — CTG Dataset Loader
+=================================
+Three datasets, in priority order:
 
-Sources:
-  1. CTU-UHB  — 552 intrapartum recordings, PhysioNet (ODC-BY-1.0)
-     https://physionet.org/content/ctu-uhb-ctgdb/1.0.0/
-  2. FHRMA    — 135 recordings with morphological annotations
-     https://www.mathworks.com/matlabcentral/fileexchange/115890 (GPL-3.0)
-  3. SPAM/CTG-Challenge-2017 — 297 long-duration recordings (DUA required)
-     Distributed via CTGDL Zenodo: https://zenodo.org/records/19510407
+  1. CTU-UHB / CTU-CHB Intrapartum CTG Database  ← PRIMARY clinical model
+     552 real intrapartum CTG recordings (FHR + UC @ 4 Hz, up to 90 min before delivery)
+     Clinical outcomes: cord blood pH, base deficit, Apgar 1 & 5
+     License: ODC-BY-1.0
+     Source: https://physionet.org/content/ctu-uhb-ctgdb/1.0.0/
 
-All signals are standardised to 4 Hz (CTU-UHB native rate).
-Missing samples are preserved as NaN, NOT silently interpolated.
+  2. CTU-CHB Annotation Dataset  ← EVENT / EXPLAINABILITY engine
+     Expert morphological annotations on the CTU-UHB recordings:
+     baseline, bradycardia, tachycardia, accelerations, decelerations
+     (early / late / variable / prolonged), uterine contractions, signal quality
+     Source: PMC7256311 / Zenodo CTGDL FHRMA archive
+
+  3. UCI / Kaggle Fetal Health Classification Dataset  ← EXTERNAL BENCHMARK only
+     2,126 CTG records with extracted tabular features (21 features),
+     classified by expert obstetricians: Normal / Suspect / Pathological
+     Used ONLY for benchmarking — NOT for primary model training
+     Source: UCI ML Repository / Kaggle
+
+References
+----------
+Chudáček et al. (2014) BMC Pregnancy and Childbirth 14:16
+Petránek et al. (2020) PMC7256311
+Fridman et al. (2025) SSRN 6027919
 """
 
 import io
 import os
 import json
-import time
 import logging
 import warnings
-import hashlib
 import tarfile
-import zipfile
 import requests
 import numpy as np
 import pandas as pd
@@ -36,95 +44,100 @@ from typing import Optional, Dict, List, Tuple
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
+# ─── Cache directory ─────────────────────────────────────────────────────────
 CACHE_DIR = Path("ctgdl_cache")
 CACHE_DIR.mkdir(exist_ok=True)
 
-# CTU-UHB record IDs on PhysioNet (1001–2520, not all exist — confirmed subset)
+# ─── Constants ────────────────────────────────────────────────────────────────
+FS = 4              # Hz — native CTU-UHB sample rate
 CTU_UHB_PN_DIR = "ctu-uhb-ctgdb/1.0.0"
-CTU_UHB_RECORD_IDS = [
-    1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010,
-    1011, 1012, 1013, 1014, 1015, 1016, 1017, 1018, 1019, 1020,
-    1021, 1022, 1023, 1024, 1025, 1026, 1027, 1028, 1029, 1030,
-    1031, 1032, 1033, 1034, 1035, 1036, 1037, 1038, 1039, 1040,
-    1041, 1042, 1043, 1044, 1045, 1046, 1047, 1048, 1049, 1050,
-]  # 50-record demo subset; full list has 552 records
 
-# Zenodo URLs for CTGDL preprocessed CSVs
+# All 552 confirmed CTU-UHB record IDs (1001–2520; not every integer exists)
+# We attempt all; wfdb silently skips missing ones.
+CTU_UHB_ALL_IDS = list(range(1001, 2521))
+
+# Zenodo CTGDL archives (pre-processed CSVs)
 ZENODO_BASE = "https://zenodo.org/records/19510407/files"
 ZENODO_FILES = {
-    "ctu_uhb_csv":       f"{ZENODO_BASE}/CTGDL_ctu_uhb_csv.tar.gz",
     "ctu_uhb_proc_csv":  f"{ZENODO_BASE}/CTGDL_ctu_uhb_proc_csv.tar.gz",
+    "ctu_uhb_csv":       f"{ZENODO_BASE}/CTGDL_ctu_uhb_csv.tar.gz",
     "fhrma_ano_csv":     f"{ZENODO_BASE}/CTGDL_FHRMA_ano_csv.tar.gz",
     "fhrma_proc_csv":    f"{ZENODO_BASE}/CTGDL_FHRMA_proc_csv.tar.gz",
-    "spam_csv":          f"{ZENODO_BASE}/CTGDL_SPAM_csv.tar.gz",
-    "spam_proc_csv":     f"{ZENODO_BASE}/CTGDL_SPAM_proc_csv.tar.gz",
 }
 
-# PhysioNet base for WFDB signals
-PHYSIONET_BASE = "https://physionet.org/files"
+# UCI/Kaggle dataset URL (fallback — local file preferred)
+UCI_KAGGLE_URL = (
+    "https://raw.githubusercontent.com/dtunnicliffe/"
+    "fetal-health-classification/main/data/fetal_health.csv"
+)
+UCI_LOCAL_PATH = Path("fetal_health.csv")
 
-FS = 4  # Hz — native CTU-UHB / CTGDL sample rate
+# pH thresholds (FIGO / CTU-UHB clinical standards)
+PH_ACIDOSIS   = 7.05
+PH_BORDERLINE = 7.15
 
-# ---------------------------------------------------------------------------
-# Data structures
-# ---------------------------------------------------------------------------
+
+# ─── Data structures ─────────────────────────────────────────────────────────
 
 @dataclass
 class CTGRecord:
-    record_id: str
-    source: str                    # "CTU-UHB" | "FHRMA" | "SPAM"
-    fhr: np.ndarray                # Fetal Heart Rate (bpm), NaN for missing
-    uc: np.ndarray                 # Uterine Contractions, NaN for missing
-    fs: float = FS
-    duration_min: float = 0.0
-    signal_quality: float = 1.0   # fraction of non-missing samples
+    """One CTG recording from CTU-UHB or synthetic fallback."""
+    record_id:      str
+    source:         str          # "CTU-UHB" | "CTU-UHB-anno" | "synthetic"
+    fhr:            np.ndarray   # Fetal Heart Rate (bpm); NaN = missing
+    uc:             np.ndarray   # Uterine Contraction; NaN = missing
+    fs:             float = FS
+    duration_min:   float = 0.0
+    signal_quality: float = 1.0  # fraction of non-NaN FHR samples
 
-    # Clinical outcomes (CTU-UHB only; NaN if unavailable)
-    ph: float = float("nan")
-    base_deficit: float = float("nan")
-    apgar1: float = float("nan")
-    apgar5: float = float("nan")
-    ph_label: str = "unknown"      # "normal" | "acidosis" | "borderline"
+    # Clinical outcomes (NaN if not available)
+    ph:             float = float("nan")
+    base_deficit:   float = float("nan")
+    apgar1:         float = float("nan")
+    apgar5:         float = float("nan")
+    ph_label:       str   = "unknown"   # "normal" | "borderline" | "acidosis"
 
-    # Annotations (FHRMA)
-    annotations: Dict = field(default_factory=dict)
+    # Expert annotations (CTU-CHB annotation dataset)
+    annotations:    Dict  = field(default_factory=dict)
+
+    # Clinical metadata from CTU-UHB header
+    gestational_age:   float = float("nan")  # weeks
+    birth_weight:      float = float("nan")  # grams
+    delivery_type:     str   = "unknown"     # "vaginal" | "cs" | "forceps" | ...
+    nicu_admission:    Optional[bool] = None
 
     def to_dict(self) -> dict:
         return {
-            "record_id": self.record_id,
-            "source": self.source,
-            "duration_min": round(self.duration_min, 2),
-            "signal_quality": round(self.signal_quality, 4),
-            "ph": self.ph,
-            "base_deficit": self.base_deficit,
-            "apgar1": self.apgar1,
-            "apgar5": self.apgar5,
-            "ph_label": self.ph_label,
-            "n_samples": len(self.fhr),
+            "record_id":       self.record_id,
+            "source":          self.source,
+            "duration_min":    round(self.duration_min, 2),
+            "signal_quality":  round(self.signal_quality, 4),
+            "ph":              self.ph,
+            "ph_label":        self.ph_label,
+            "base_deficit":    self.base_deficit,
+            "apgar1":          self.apgar1,
+            "apgar5":          self.apgar5,
+            "gestational_age": self.gestational_age,
+            "birth_weight":    self.birth_weight,
+            "delivery_type":   self.delivery_type,
+            "n_samples":       len(self.fhr),
         }
 
 
-# ---------------------------------------------------------------------------
-# Download helpers
-# ---------------------------------------------------------------------------
+# ─── Download helpers ─────────────────────────────────────────────────────────
 
 def _cached_path(name: str) -> Path:
     return CACHE_DIR / name
 
 
-def _download_file(url: str, dest: Path, timeout: int = 60) -> bool:
-    """Download url to dest with a simple retry. Returns True on success."""
-    if dest.exists():
+def _download_file(url: str, dest: Path, timeout: int = 90) -> bool:
+    if dest.exists() and dest.stat().st_size > 0:
         return True
     try:
         resp = requests.get(url, timeout=timeout, stream=True)
         resp.raise_for_status()
         with open(dest, "wb") as fh:
-            for chunk in resp.iter_content(chunk_size=65536):
+            for chunk in resp.iter_content(chunk_size=131072):
                 fh.write(chunk)
         return True
     except Exception as exc:
@@ -144,115 +157,155 @@ def _extract_tar(src: Path, dest_dir: Path) -> bool:
         return False
 
 
-# ---------------------------------------------------------------------------
-# PhysioNet WFDB loader (CTU-UHB)
-# ---------------------------------------------------------------------------
+# ─── 1. CTU-UHB PhysioNet loader ─────────────────────────────────────────────
 
-def _load_ctu_uhb_physionet(record_id: int) -> Optional[CTGRecord]:
+def _parse_ctu_uhb_header(rec) -> dict:
     """
-    Stream a single CTU-UHB record directly from PhysioNet via WFDB.
-    Requires the `wfdb` package.
+    Extract clinical metadata from a CTU-UHB WFDB record's comments.
+    The .hea file encodes fields like: pH=7.21 BD=4.3 Apgar1=9 Apgar5=10 ...
+    """
+    info = {"ph": float("nan"), "base_deficit": float("nan"),
+            "apgar1": float("nan"), "apgar5": float("nan"),
+            "gestational_age": float("nan"), "birth_weight": float("nan"),
+            "delivery_type": "unknown"}
+    try:
+        for comment in (rec.comments or []):
+            for token in comment.split():
+                k_v = token.split("=")
+                if len(k_v) != 2:
+                    continue
+                k, v = k_v[0].strip(), k_v[1].strip().rstrip(",").rstrip(".")
+                try:
+                    val = float(v)
+                except ValueError:
+                    val = v
+                key_map = {
+                    "pH": "ph", "BD": "base_deficit",
+                    "Apgar1": "apgar1", "Apgar5": "apgar5",
+                    "GA": "gestational_age", "BW": "birth_weight",
+                    "Deliv": "delivery_type",
+                }
+                if k in key_map:
+                    info[key_map[k]] = val
+    except Exception:
+        pass
+    return info
+
+
+def load_ctu_uhb_physionet(
+    record_ids: Optional[List[int]] = None,
+    max_records: int = 552,
+    verbose: bool = False,
+) -> List[CTGRecord]:
+    """
+    Stream CTU-UHB records directly from PhysioNet via WFDB.
+    Returns a list of CTGRecord objects.
+
+    Requires:  pip install wfdb
     """
     try:
-        import wfdb  # type: ignore
+        import wfdb
     except ImportError:
-        logger.warning("wfdb not installed — cannot load CTU-UHB from PhysioNet")
-        return None
+        logger.warning("wfdb not installed. Run: pip install wfdb")
+        return []
 
-    try:
-        rec = wfdb.rdrecord(str(record_id), pn_dir=CTU_UHB_PN_DIR)
-        sig_names = [s.upper() for s in rec.sig_name]
+    if record_ids is None:
+        record_ids = CTU_UHB_ALL_IDS
 
-        fhr_idx = next((i for i, s in enumerate(sig_names) if "FHR" in s), None)
-        uc_idx  = next((i for i, s in enumerate(sig_names) if any(t in s for t in ("UC", "TOCO", "UC"))), None)
+    records: List[CTGRecord] = []
+    attempted = 0
 
-        if fhr_idx is None:
-            return None
-
-        fhr = rec.p_signal[:, fhr_idx].astype(float)
-        uc  = rec.p_signal[:, uc_idx].astype(float) if uc_idx is not None else np.full_like(fhr, np.nan)
-
-        # Replace sentinel 0 values with NaN (CTU-UHB uses 0 for missing FHR)
-        fhr[fhr <= 0] = np.nan
-        uc[uc < 0]    = np.nan
-
-        n_total  = len(fhr)
-        n_valid  = int(np.sum(~np.isnan(fhr)))
-        quality  = n_valid / n_total if n_total > 0 else 0.0
-        duration = n_total / (FS * 60)
-
-        # Clinical metadata
-        ph = bd = a1 = a5 = float("nan")
-        ph_label = "unknown"
+    for rid in record_ids:
+        if len(records) >= max_records:
+            break
+        attempted += 1
         try:
-            ann = wfdb.rdann(str(record_id), "atr", pn_dir=CTU_UHB_PN_DIR)
-            for sym, aux in zip(ann.symbol, ann.aux_note):
-                aux_str = aux.decode() if isinstance(aux, bytes) else str(aux)
-                if sym == "N" and "pH=" in aux_str:
-                    parts = {p.split("=")[0]: p.split("=")[1] for p in aux_str.split() if "=" in p}
-                    ph = float(parts.get("pH", "nan"))
-                    bd = float(parts.get("BD", "nan"))
-                    a1 = float(parts.get("Apgar1", "nan"))
-                    a5 = float(parts.get("Apgar5", "nan"))
-        except Exception:
-            pass
+            rec = wfdb.rdrecord(str(rid), pn_dir=CTU_UHB_PN_DIR)
+            sig_names_upper = [s.upper() for s in rec.sig_name]
 
-        try:
-            # Metadata CSV from PhysioNet (RECORDS file has clinical outcomes)
-            ph = rec.comments[0].split("pH=")[-1].split()[0] if rec.comments else ph
-            ph = float(ph) if not isinstance(ph, float) else ph
-        except Exception:
-            pass
+            fhr_idx = next((i for i, s in enumerate(sig_names_upper) if "FHR" in s), None)
+            uc_idx  = next((i for i, s in enumerate(sig_names_upper)
+                            if any(t in s for t in ("UC", "TOCO", "TOC"))), None)
+            if fhr_idx is None:
+                continue
 
-        if not np.isnan(ph):
-            ph_label = "acidosis" if ph < 7.05 else "borderline" if ph < 7.15 else "normal"
+            fhr = rec.p_signal[:, fhr_idx].astype(float)
+            uc  = (rec.p_signal[:, uc_idx].astype(float)
+                   if uc_idx is not None else np.full_like(fhr, np.nan))
 
-        return CTGRecord(
-            record_id=str(record_id),
-            source="CTU-UHB",
-            fhr=fhr,
-            uc=uc,
-            fs=float(FS),
-            duration_min=duration,
-            signal_quality=quality,
-            ph=ph,
-            base_deficit=bd,
-            apgar1=a1,
-            apgar5=a5,
-            ph_label=ph_label,
-        )
-    except Exception as exc:
-        logger.warning("CTU-UHB record %s failed — %s", record_id, exc)
-        return None
+            # Replace sentinel 0 / negative values with NaN
+            fhr[(fhr <= 0) | (fhr > 300)] = np.nan
+            uc[uc < 0] = np.nan
+
+            n_total  = len(fhr)
+            n_valid  = int(np.sum(~np.isnan(fhr)))
+            quality  = n_valid / max(n_total, 1)
+            duration = n_total / (FS * 60.0)
+
+            meta = _parse_ctu_uhb_header(rec)
+            ph   = float(meta["ph"])
+            ph_label = ("acidosis"   if (not np.isnan(ph) and ph < PH_ACIDOSIS) else
+                        "borderline" if (not np.isnan(ph) and ph < PH_BORDERLINE) else
+                        "normal"     if not np.isnan(ph) else "unknown")
+
+            records.append(CTGRecord(
+                record_id=str(rid),
+                source="CTU-UHB",
+                fhr=fhr, uc=uc, fs=float(FS),
+                duration_min=duration,
+                signal_quality=quality,
+                ph=ph,
+                base_deficit=float(meta["base_deficit"]),
+                apgar1=float(meta["apgar1"]),
+                apgar5=float(meta["apgar5"]),
+                ph_label=ph_label,
+                gestational_age=float(meta["gestational_age"]),
+                birth_weight=float(meta["birth_weight"]),
+                delivery_type=str(meta["delivery_type"]),
+            ))
+            if verbose and len(records) % 50 == 0:
+                print(f"  [CTU-UHB] loaded {len(records)} records...")
+        except Exception as exc:
+            if verbose:
+                logger.debug("Record %s failed: %s", rid, exc)
+
+    if verbose:
+        print(f"  [CTU-UHB] Total: {len(records)} / {attempted} attempted")
+    return records
 
 
-# ---------------------------------------------------------------------------
-# Zenodo CSV loader (CTGDL preprocessed)
-# ---------------------------------------------------------------------------
+# ─── 2. Zenodo CSV loader (CTGDL preprocessed) ───────────────────────────────
 
-def _load_zenodo_csv_dir(key: str, max_records: int = 100) -> List[CTGRecord]:
+def load_zenodo_csv(
+    key: str,
+    max_records: int = 552,
+    verbose: bool = False,
+) -> List[CTGRecord]:
     """
     Download and parse a CTGDL preprocessed CSV archive from Zenodo.
-    key is one of the keys in ZENODO_FILES.
+    key must be one of the keys in ZENODO_FILES.
     """
-    url       = ZENODO_FILES[key]
-    tar_path  = _cached_path(f"{key}.tar.gz")
-    dest_dir  = _cached_path(key)
+    if key not in ZENODO_FILES:
+        return []
+
+    url      = ZENODO_FILES[key]
+    tar_path = _cached_path(f"{key}.tar.gz")
+    dest_dir = _cached_path(key)
 
     if not dest_dir.exists() or not any(dest_dir.rglob("*.csv")):
         dest_dir.mkdir(exist_ok=True)
-        ok = _download_file(url, tar_path, timeout=120)
+        if verbose:
+            print(f"  [Zenodo] Downloading {key}...")
+        ok = _download_file(url, tar_path, timeout=180)
         if not ok:
             return []
         _extract_tar(tar_path, dest_dir)
 
     source_map = {
-        "ctu_uhb_csv": "CTU-UHB",
+        "ctu_uhb_csv":      "CTU-UHB",
         "ctu_uhb_proc_csv": "CTU-UHB",
-        "fhrma_ano_csv": "FHRMA",
-        "fhrma_proc_csv": "FHRMA",
-        "spam_csv": "SPAM",
-        "spam_proc_csv": "SPAM",
+        "fhrma_ano_csv":    "CTU-CHB-anno",
+        "fhrma_proc_csv":   "CTU-CHB-anno",
     }
     source = source_map.get(key, "CTGDL")
 
@@ -265,127 +318,139 @@ def _load_zenodo_csv_dir(key: str, max_records: int = 100) -> List[CTGRecord]:
             df.columns = df.columns.str.upper().str.strip()
 
             fhr_col = next((c for c in df.columns if "FHR" in c), None)
-            uc_col  = next((c for c in df.columns if any(t in c for t in ("UC", "TOCO"))), None)
-
+            uc_col  = next((c for c in df.columns
+                            if any(t in c for t in ("UC", "TOCO"))), None)
             if fhr_col is None:
                 continue
 
             fhr = df[fhr_col].values.astype(float)
-            uc  = df[uc_col].values.astype(float) if uc_col else np.full_like(fhr, np.nan)
+            uc  = (df[uc_col].values.astype(float)
+                   if uc_col else np.full_like(fhr, np.nan))
 
-            fhr[fhr <= 0] = np.nan
-            uc[uc < 0]    = np.nan
+            fhr[(fhr <= 0) | (fhr > 300)] = np.nan
+            uc[uc < 0] = np.nan
 
-            n_total = len(fhr)
-            quality = float(np.sum(~np.isnan(fhr))) / max(n_total, 1)
-            duration = n_total / (FS * 60)
+            n_total  = len(fhr)
+            quality  = float(np.sum(~np.isnan(fhr))) / max(n_total, 1)
+            duration = n_total / (FS * 60.0)
 
-            # Outcomes from companion columns
-            ph = float(df["PH"].iloc[0]) if "PH" in df.columns and len(df) > 0 else float("nan")
-            bd = float(df["BD"].iloc[0]) if "BD" in df.columns and len(df) > 0 else float("nan")
-            a1 = float(df["APGAR1"].iloc[0]) if "APGAR1" in df.columns and len(df) > 0 else float("nan")
-            a5 = float(df["APGAR5"].iloc[0]) if "APGAR5" in df.columns and len(df) > 0 else float("nan")
+            # Clinical outcome columns (if present in CSV)
+            def _col_val(col_name):
+                c = next((c for c in df.columns if col_name.upper() in c), None)
+                return float(df[c].iloc[0]) if (c and len(df) > 0) else float("nan")
 
-            ph_label = "unknown"
-            if not np.isnan(ph):
-                ph_label = "acidosis" if ph < 7.05 else "borderline" if ph < 7.15 else "normal"
+            ph = _col_val("PH")
+            bd = _col_val("BD")
+            a1 = _col_val("APGAR1")
+            a5 = _col_val("APGAR5")
+            ph_label = ("acidosis"   if (not np.isnan(ph) and ph < PH_ACIDOSIS) else
+                        "borderline" if (not np.isnan(ph) and ph < PH_BORDERLINE) else
+                        "normal"     if not np.isnan(ph) else "unknown")
+
+            # Annotation columns (FHRMA)
+            annotations = {}
+            for acol in df.columns:
+                if any(t in acol for t in ("BASELINE", "ACCEL", "DECEL", "BRADY", "TACHY")):
+                    annotations[acol.lower()] = df[acol].values.tolist()
 
             records.append(CTGRecord(
                 record_id=csv_path.stem,
                 source=source,
-                fhr=fhr,
-                uc=uc,
-                fs=float(FS),
+                fhr=fhr, uc=uc, fs=float(FS),
                 duration_min=duration,
                 signal_quality=quality,
-                ph=ph,
-                base_deficit=bd,
-                apgar1=a1,
-                apgar5=a5,
+                ph=ph, base_deficit=bd, apgar1=a1, apgar5=a5,
                 ph_label=ph_label,
+                annotations=annotations,
             ))
         except Exception as exc:
             logger.debug("CSV parse error %s — %s", csv_path, exc)
 
+    if verbose:
+        print(f"  [Zenodo {key}] Loaded {len(records)} records")
     return records
 
 
-# ---------------------------------------------------------------------------
-# Synthetic CTU-UHB fallback (for offline / demo mode)
-# ---------------------------------------------------------------------------
+# ─── 3. Synthetic CTU-UHB fallback ───────────────────────────────────────────
 
-def _make_synthetic_ctu_uhb(n: int = 50, seed: int = 42) -> List[CTGRecord]:
+def make_synthetic_ctu_uhb(
+    n: int = 50,
+    seed: int = 42,
+    include_annotations: bool = True,
+) -> List[CTGRecord]:
     """
-    Generate physiologically-plausible synthetic CTG records based on
-    CTU-UHB statistics when the real dataset cannot be downloaded.
-    These are CLEARLY labelled as synthetic and are only used for UI demos.
+    Physiologically-plausible synthetic CTU-UHB records.
+    CLEARLY labelled source="synthetic" — never passed off as real data.
+    Based on CTU-UHB distribution statistics.
     """
     rng = np.random.default_rng(seed)
     records: List[CTGRecord] = []
-    duration_samples = int(30 * 60 * FS)  # 30-minute recordings
+    duration_samples = int(30 * 60 * FS)   # 30-minute recordings
 
     for i in range(n):
-        # Baseline FHR 120-160 bpm (normal range)
         baseline = rng.uniform(120, 155)
-        # Short-term variability (STV)
-        stv = rng.uniform(3, 12)
-        # Long-term oscillation
+        stv      = rng.uniform(3, 12)
         lto_freq = rng.uniform(0.02, 0.06)
         lto_amp  = rng.uniform(5, 20)
-
         t = np.arange(duration_samples) / FS
+
         fhr = (baseline
                + lto_amp * np.sin(2 * np.pi * lto_freq * t)
                + stv * rng.standard_normal(duration_samples))
         fhr = np.clip(fhr, 60, 200)
 
-        # Add random decelerations
+        # Decelerations
         n_decels = rng.integers(0, 8)
+        decel_events = []
         for _ in range(n_decels):
-            onset = rng.integers(0, duration_samples - 200)
+            onset = int(rng.integers(0, duration_samples - 240))
             depth = rng.uniform(10, 50)
-            width = rng.integers(30, 180)
-            decel_shape = np.concatenate([
-                np.linspace(0, -depth, width // 2),
-                np.linspace(-depth, 0, width - width // 2)
-            ])
-            end = min(onset + width, duration_samples)
-            fhr[onset:end] += decel_shape[:end - onset]
-        fhr = np.clip(fhr, 50, 200)
+            width = int(rng.integers(60, 200))
+            end   = min(onset + width, duration_samples)
+            w2    = width // 2
+            shape = np.concatenate([
+                np.linspace(0, -depth, w2),
+                np.linspace(-depth, 0, width - w2),
+            ])[:end - onset]
+            fhr[onset:end] += shape
+            decel_events.append({"onset_s": onset / FS, "depth_bpm": depth,
+                                  "duration_s": (end - onset) / FS})
+        fhr = np.clip(fhr, 40, 220)
 
         # UC signal
         uc = np.zeros(duration_samples)
         n_contractions = rng.integers(3, 15)
         for _ in range(n_contractions):
-            onset = rng.integers(0, duration_samples - 300)
+            onset = int(rng.integers(0, duration_samples - 360))
             peak  = rng.uniform(30, 100)
-            width = rng.integers(120, 360)
+            width = int(rng.integers(120, 360))
             half  = width // 2
             end   = min(onset + width, duration_samples)
-            half_actual = min(half, end - onset)
-            uc[onset: onset + half_actual] += np.linspace(0, peak, half_actual)
-            rest = end - (onset + half_actual)
+            ha    = min(half, end - onset)
+            uc[onset: onset + ha] += np.linspace(0, peak, ha)
+            rest = end - (onset + ha)
             if rest > 0:
-                uc[onset + half_actual: end] += np.linspace(peak, 0, rest)
+                uc[onset + ha: end] += np.linspace(peak, 0, rest)
         uc = np.clip(uc, 0, 120)
 
-        # Missing signal (5-15% missing)
+        # Missing samples
         missing_frac = rng.uniform(0.05, 0.15)
-        missing_idx = rng.choice(duration_samples, size=int(missing_frac * duration_samples), replace=False)
+        missing_idx  = rng.choice(duration_samples,
+                                   size=int(missing_frac * duration_samples), replace=False)
         fhr[missing_idx] = np.nan
         quality = float(np.sum(~np.isnan(fhr))) / duration_samples
 
-        # Synthesize pH outcome correlated with deceleration burden
-        ph = rng.normal(7.22, 0.08)
-        ph = float(np.clip(ph, 6.8, 7.5))
-        ph_label = "acidosis" if ph < 7.05 else "borderline" if ph < 7.15 else "normal"
+        # pH outcome (correlated with deceleration burden)
+        ph = float(np.clip(rng.normal(7.22, 0.08), 6.80, 7.50))
+        ph_label = ("acidosis"   if ph < PH_ACIDOSIS else
+                    "borderline" if ph < PH_BORDERLINE else "normal")
+
+        annotations = {"decelerations": decel_events} if include_annotations else {}
 
         records.append(CTGRecord(
-            record_id=f"SYNTH-{i+1:04d}",
-            source="CTU-UHB (synthetic)",
-            fhr=fhr,
-            uc=uc,
-            fs=float(FS),
+            record_id=f"SYNTH-CTU-{i+1:04d}",
+            source="synthetic",
+            fhr=fhr, uc=uc, fs=float(FS),
             duration_min=30.0,
             signal_quality=quality,
             ph=ph,
@@ -393,245 +458,144 @@ def _make_synthetic_ctu_uhb(n: int = 50, seed: int = 42) -> List[CTGRecord]:
             apgar1=float(rng.integers(6, 10)),
             apgar5=float(rng.integers(7, 10)),
             ph_label=ph_label,
+            gestational_age=float(rng.uniform(37, 42)),
+            birth_weight=float(rng.normal(3400, 450)),
+            delivery_type=rng.choice(["vaginal", "cs"], p=[0.7, 0.3]),
+            annotations=annotations,
         ))
 
     return records
 
 
-def _make_synthetic_fhrma(n: int = 30, seed: int = 99) -> List[CTGRecord]:
-    """Synthetic FHRMA-style records with morphological annotations."""
-    rng = np.random.default_rng(seed)
-    records: List[CTGRecord] = []
-    duration_samples = int(20 * 60 * FS)
+# ─── 4. UCI/Kaggle benchmark loader ──────────────────────────────────────────
 
-    for i in range(n):
-        baseline = rng.uniform(115, 160)
-        stv = rng.uniform(4, 10)
-        t = np.arange(duration_samples) / FS
-        fhr = baseline + 10 * np.sin(2 * np.pi * 0.04 * t) + stv * rng.standard_normal(duration_samples)
-        fhr = np.clip(fhr, 60, 200).astype(float)
-
-        # Accelerations
-        accelerations = []
-        n_acc = rng.integers(2, 10)
-        for _ in range(n_acc):
-            onset = int(rng.uniform(0, duration_samples - 200))
-            height = rng.uniform(10, 30)
-            width = rng.integers(60, 120)
-            end = min(onset + width, duration_samples)
-            acc_shape = height * np.sin(np.pi * np.arange(end - onset) / (end - onset))
-            fhr[onset:end] += acc_shape
-            accelerations.append({"onset": onset / FS, "height": height, "duration": (end - onset) / FS})
-
-        # Decelerations
-        decelerations = []
-        n_dec = rng.integers(0, 5)
-        for _ in range(n_dec):
-            onset = int(rng.uniform(0, duration_samples - 180))
-            depth = rng.uniform(15, 45)
-            width = rng.integers(60, 150)
-            end = min(onset + width, duration_samples)
-            dec_shape = -depth * np.sin(np.pi * np.arange(end - onset) / (end - onset))
-            fhr[onset:end] += dec_shape
-            decelerations.append({"onset": onset / FS, "depth": depth, "duration": (end - onset) / FS})
-
-        fhr = np.clip(fhr, 50, 200)
-        uc = np.zeros(duration_samples)
-
-        quality = 1.0 - rng.uniform(0.02, 0.1)
-
-        records.append(CTGRecord(
-            record_id=f"FHRMA-SYNTH-{i+1:03d}",
-            source="FHRMA (synthetic)",
-            fhr=fhr,
-            uc=uc,
-            fs=float(FS),
-            duration_min=20.0,
-            signal_quality=quality,
-            annotations={
-                "baseline": float(baseline),
-                "accelerations": accelerations,
-                "decelerations": decelerations,
-            },
-        ))
-
-    return records
-
-
-def _make_synthetic_spam(n: int = 20, seed: int = 7) -> List[CTGRecord]:
-    """Synthetic SPAM (CTG Challenge 2017) long-duration records."""
-    rng = np.random.default_rng(seed)
-    records: List[CTGRecord] = []
-    duration_samples = int(60 * 60 * FS)  # 60-minute recordings
-
-    for i in range(n):
-        baseline = rng.uniform(125, 150)
-        t = np.arange(duration_samples) / FS
-        fhr = (baseline
-               + 8 * np.sin(2 * np.pi * 0.03 * t)
-               + 5 * rng.standard_normal(duration_samples))
-        fhr = np.clip(fhr, 60, 200).astype(float)
-
-        uc = np.zeros(duration_samples)
-        n_contractions = rng.integers(15, 40)
-        for _ in range(n_contractions):
-            onset = rng.integers(0, duration_samples - 400)
-            peak  = rng.uniform(40, 90)
-            width = rng.integers(200, 400)
-            half  = width // 2
-            end   = min(onset + width, duration_samples)
-            half_actual = min(half, end - onset)
-            uc[onset: onset + half_actual] += np.linspace(0, peak, half_actual)
-            rest = end - (onset + half_actual)
-            if rest > 0:
-                uc[onset + half_actual: end] += np.linspace(peak, 0, rest)
-
-        # Higher missing rate for long recordings
-        missing_frac = rng.uniform(0.08, 0.20)
-        missing_idx = rng.choice(duration_samples, size=int(missing_frac * duration_samples), replace=False)
-        fhr[missing_idx] = np.nan
-        quality = float(np.sum(~np.isnan(fhr))) / duration_samples
-
-        records.append(CTGRecord(
-            record_id=f"SPAM-SYNTH-{i+1:03d}",
-            source="SPAM (synthetic)",
-            fhr=fhr,
-            uc=uc,
-            fs=float(FS),
-            duration_min=60.0,
-            signal_quality=quality,
-        ))
-
-    return records
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-class CTGDLDataset:
+def load_uci_kaggle_benchmark(
+    local_path: Optional[Path] = None,
+    verbose: bool = False,
+) -> pd.DataFrame:
     """
-    Unified interface to the CTGDL multi-source CTG dataset.
+    Load UCI/Kaggle Fetal Health Classification dataset.
 
-    Priority order for loading:
-      1. Real data from Zenodo CSV archives (if downloadable)
-      2. Real data from PhysioNet WFDB (if wfdb is installed)
-      3. Synthetic fallback with physiologically-plausible signals
+    Returns a DataFrame with 21 CTG features + 'fetal_health' label (1/2/3).
+    Used ONLY as an external benchmark — NOT for primary model training.
+
+    Source: UCI ML Repository / Kaggle
+    Citation: Ayres de Campos et al. (2000) SisPorto 2.0
+    """
+    path = local_path or UCI_LOCAL_PATH
+
+    if path.exists():
+        df = pd.read_csv(path)
+        if verbose:
+            print(f"  [UCI/Kaggle] Loaded {len(df)} records from {path}")
+        return df
+
+    # Fallback: download from GitHub mirror
+    try:
+        if verbose:
+            print(f"  [UCI/Kaggle] Downloading from GitHub mirror...")
+        df = pd.read_csv(UCI_KAGGLE_URL, timeout=30)
+        df.to_csv(path, index=False)
+        if verbose:
+            print(f"  [UCI/Kaggle] Saved to {path}")
+        return df
+    except Exception as exc:
+        logger.warning("UCI/Kaggle download failed: %s", exc)
+        return pd.DataFrame()
+
+
+# ─── 5. Unified CTU-UHB Dataset class ────────────────────────────────────────
+
+class CTUDataset:
+    """
+    Unified loader for CTU-UHB as the PRIMARY clinical dataset.
+
+    Priority order for loading raw CTG signals:
+      1. PhysioNet WFDB streaming (real data, requires wfdb)
+      2. Zenodo preprocessed CSVs (real data, requires internet)
+      3. Physiologically-plausible synthetic fallback (demo only)
+
+    CTU-CHB annotations loaded separately for event detection.
     """
 
     def __init__(
         self,
-        use_ctu_uhb: bool = True,
-        use_fhrma: bool = True,
-        use_spam: bool = True,
-        max_per_source: int = 50,
+        max_records: int = 552,
         force_synthetic: bool = False,
+        load_annotations: bool = True,
         verbose: bool = True,
     ):
-        self.use_ctu_uhb = use_ctu_uhb
-        self.use_fhrma = use_fhrma
-        self.use_spam = use_spam
-        self.max_per_source = max_per_source
-        self.force_synthetic = force_synthetic
-        self.verbose = verbose
+        self.max_records      = max_records
+        self.force_synthetic  = force_synthetic
+        self.load_annotations = load_annotations
+        self.verbose          = verbose
 
-        self._records: List[CTGRecord] = []
-        self._loaded = False
-        self._load_summary: Dict = {}
+        self._records:       List[CTGRecord] = []
+        self._anno_records:  List[CTGRecord] = []
+        self._loaded         = False
+        self._load_method    = "not loaded"
 
-    def load(self) -> "CTGDLDataset":
-        """Load all requested sources."""
+    def load(self) -> "CTUDataset":
         if self._loaded:
             return self
 
-        records: List[CTGRecord] = []
-        summary: Dict = {}
+        # ── Primary CTU-UHB signals ──────────────────────────────────────────
+        if not self.force_synthetic:
+            # Try PhysioNet WFDB
+            records = load_ctu_uhb_physionet(
+                max_records=self.max_records, verbose=self.verbose
+            )
+            if records:
+                self._records    = records
+                self._load_method = f"PhysioNet WFDB ({len(records)} real records)"
+            else:
+                # Try Zenodo CSV
+                records = load_zenodo_csv(
+                    "ctu_uhb_proc_csv", max_records=self.max_records,
+                    verbose=self.verbose
+                )
+                if not records:
+                    records = load_zenodo_csv(
+                        "ctu_uhb_csv", max_records=self.max_records,
+                        verbose=self.verbose
+                    )
+                if records:
+                    self._records    = records
+                    self._load_method = f"Zenodo CSV ({len(records)} real records)"
 
-        if self.use_ctu_uhb:
-            r, method = self._load_source_ctu_uhb()
-            records.extend(r)
-            summary["CTU-UHB"] = {"count": len(r), "method": method,
-                                   "citation": "PhysioNet: ctu-uhb-ctgdb/1.0.0 (ODC-BY-1.0)",
-                                   "url": "https://physionet.org/content/ctu-uhb-ctgdb/1.0.0/"}
+        if not self._records:
+            # Synthetic fallback
+            n_synth = min(self.max_records, 100)
+            self._records    = make_synthetic_ctu_uhb(n=n_synth, seed=42)
+            self._load_method = f"synthetic ({len(self._records)} records)"
+            if self.verbose:
+                print(f"  [CTU-UHB] Using synthetic fallback: {len(self._records)} records")
 
-        if self.use_fhrma:
-            r, method = self._load_source_fhrma()
-            records.extend(r)
-            summary["FHRMA"] = {"count": len(r), "method": method,
-                                  "citation": "FHRMA Toolbox, MathWorks File Exchange (GPL-3.0)",
-                                  "url": "https://www.mathworks.com/matlabcentral/fileexchange/115890"}
+        # ── CTU-CHB annotations ──────────────────────────────────────────────
+        if self.load_annotations and not self.force_synthetic:
+            anno = load_zenodo_csv(
+                "fhrma_ano_csv",
+                max_records=self.max_records,
+                verbose=self.verbose,
+            )
+            if not anno:
+                anno = load_zenodo_csv(
+                    "fhrma_proc_csv",
+                    max_records=self.max_records,
+                    verbose=self.verbose,
+                )
+            self._anno_records = anno
+            if self.verbose and anno:
+                print(f"  [CTU-CHB-anno] Loaded {len(anno)} annotation records")
 
-        if self.use_spam:
-            r, method = self._load_source_spam()
-            records.extend(r)
-            summary["SPAM"] = {"count": len(r), "method": method,
-                                "citation": "CTG Challenge 2017, SPaM Workshop (DUA)",
-                                "url": "https://zenodo.org/records/19510407"}
-
-        self._records = records
-        self._load_summary = summary
         self._loaded = True
-
         if self.verbose:
-            total = len(records)
-            print(f"[CTGDL] Loaded {total} records: "
-                  + ", ".join(f"{s}={v['count']} ({v['method']})"
-                              for s, v in summary.items()))
+            print(f"  [CTUDataset] Ready: {len(self._records)} primary records | "
+                  f"{len(self._anno_records)} annotation records | "
+                  f"method: {self._load_method}")
         return self
 
-    def _load_source_ctu_uhb(self) -> Tuple[List[CTGRecord], str]:
-        if self.force_synthetic:
-            return _make_synthetic_ctu_uhb(self.max_per_source), "synthetic"
-
-        # Try Zenodo CSV first
-        r = _load_zenodo_csv_dir("ctu_uhb_proc_csv", max_records=self.max_per_source)
-        if r:
-            return r, "Zenodo CSV"
-
-        # Try PhysioNet WFDB
-        try:
-            import wfdb  # noqa: F401
-            records = []
-            for rid in CTU_UHB_RECORD_IDS[:self.max_per_source]:
-                rec = _load_ctu_uhb_physionet(rid)
-                if rec:
-                    records.append(rec)
-                if len(records) >= self.max_per_source:
-                    break
-            if records:
-                return records, "PhysioNet WFDB"
-        except ImportError:
-            pass
-
-        # Synthetic fallback
-        return _make_synthetic_ctu_uhb(self.max_per_source), "synthetic"
-
-    def _load_source_fhrma(self) -> Tuple[List[CTGRecord], str]:
-        if self.force_synthetic:
-            return _make_synthetic_fhrma(min(self.max_per_source, 30)), "synthetic"
-
-        r = _load_zenodo_csv_dir("fhrma_proc_csv", max_records=self.max_per_source)
-        if r:
-            return r, "Zenodo CSV"
-        r = _load_zenodo_csv_dir("fhrma_ano_csv", max_records=self.max_per_source)
-        if r:
-            return r, "Zenodo CSV (annotations)"
-
-        return _make_synthetic_fhrma(min(self.max_per_source, 30)), "synthetic"
-
-    def _load_source_spam(self) -> Tuple[List[CTGRecord], str]:
-        if self.force_synthetic:
-            return _make_synthetic_spam(min(self.max_per_source, 20)), "synthetic"
-
-        r = _load_zenodo_csv_dir("spam_proc_csv", max_records=self.max_per_source)
-        if r:
-            return r, "Zenodo CSV"
-
-        return _make_synthetic_spam(min(self.max_per_source, 20)), "synthetic"
-
-    # ------------------------------------------------------------------
-    # Accessors
-    # ------------------------------------------------------------------
+    # ── Accessors ─────────────────────────────────────────────────────────────
 
     @property
     def records(self) -> List[CTGRecord]:
@@ -640,15 +604,18 @@ class CTGDLDataset:
         return self._records
 
     @property
-    def load_summary(self) -> Dict:
-        return self._load_summary
+    def annotation_records(self) -> List[CTGRecord]:
+        if not self._loaded:
+            self.load()
+        return self._anno_records
 
-    def get_by_source(self, source: str) -> List[CTGRecord]:
-        return [r for r in self.records if source.lower() in r.source.lower()]
+    @property
+    def load_method(self) -> str:
+        return self._load_method
 
-    def to_metadata_df(self) -> pd.DataFrame:
-        """Return a DataFrame of record metadata (no raw signals)."""
-        return pd.DataFrame([r.to_dict() for r in self.records])
+    @property
+    def is_real_data(self) -> bool:
+        return "real" in self._load_method or "PhysioNet" in self._load_method or "Zenodo" in self._load_method
 
     def get_record(self, record_id: str) -> Optional[CTGRecord]:
         for r in self.records:
@@ -656,25 +623,65 @@ class CTGDLDataset:
                 return r
         return None
 
+    def to_metadata_df(self) -> pd.DataFrame:
+        return pd.DataFrame([r.to_dict() for r in self.records])
+
+    def ph_labels(self) -> pd.Series:
+        return pd.Series([r.ph_label for r in self.records])
+
     def stats(self) -> Dict:
         recs = self.records
-        if not recs:
-            return {}
-
-        sources = pd.Series([r.source for r in recs]).value_counts().to_dict()
-        durations = [r.duration_min for r in recs]
-        qualities  = [r.signal_quality for r in recs]
-        phs = [r.ph for r in recs if not np.isnan(r.ph)]
-        ph_labels = pd.Series([r.ph_label for r in recs]).value_counts().to_dict()
-
+        phs  = [r.ph for r in recs if not np.isnan(r.ph)]
         return {
-            "n_records": len(recs),
-            "n_per_source": sources,
-            "total_hours": round(sum(durations) / 60, 1),
-            "mean_duration_min": round(float(np.mean(durations)), 1),
-            "mean_signal_quality": round(float(np.mean(qualities)), 3),
-            "ph_available": len(phs),
-            "mean_ph": round(float(np.mean(phs)), 3) if phs else None,
-            "ph_label_distribution": ph_labels,
-            "load_summary": self._load_summary,
+            "n_records":        len(recs),
+            "load_method":      self._load_method,
+            "is_real_data":     self.is_real_data,
+            "n_annotation_records": len(self._anno_records),
+            "total_hours":      round(sum(r.duration_min for r in recs) / 60, 1),
+            "mean_duration_min": round(float(np.mean([r.duration_min for r in recs])), 1),
+            "mean_signal_quality": round(float(np.mean([r.signal_quality for r in recs])), 3),
+            "n_ph_available":   len(phs),
+            "mean_ph":          round(float(np.mean(phs)), 4) if phs else None,
+            "n_acidosis":       sum(1 for r in recs if r.ph_label == "acidosis"),
+            "n_borderline":     sum(1 for r in recs if r.ph_label == "borderline"),
+            "n_normal_ph":      sum(1 for r in recs if r.ph_label == "normal"),
+            "ph_label_dist":    pd.Series([r.ph_label for r in recs]).value_counts().to_dict(),
+            "sources":          pd.Series([r.source for r in recs]).value_counts().to_dict(),
+        }
+
+
+# ─── Legacy compatibility alias ───────────────────────────────────────────────
+# Keep CTGDLDataset name working for any existing imports
+
+class CTGDLDataset(CTUDataset):
+    """Alias for backwards compatibility — use CTUDataset for new code."""
+
+    def __init__(self, use_ctu_uhb=True, use_fhrma=True, use_spam=True,
+                 max_per_source=50, force_synthetic=False, verbose=True):
+        super().__init__(
+            max_records=max_per_source,
+            force_synthetic=force_synthetic,
+            load_annotations=use_fhrma,
+            verbose=verbose,
+        )
+
+    def load(self) -> "CTGDLDataset":
+        super().load()
+        return self
+
+    @property
+    def load_summary(self) -> Dict:
+        return {
+            "CTU-UHB": {
+                "count":   len(self._records),
+                "method":  self._load_method,
+                "citation": "Chudáček et al. (2014) BMC Pregnancy and Childbirth 14:16",
+                "url":     "https://physionet.org/content/ctu-uhb-ctgdb/1.0.0/",
+            },
+            "CTU-CHB-anno": {
+                "count":   len(self._anno_records),
+                "method":  "Zenodo CSV (annotations)" if self._anno_records else "not loaded",
+                "citation": "Petránek et al. (2020) PMC7256311",
+                "url":     "https://zenodo.org/records/19510407",
+            },
         }
