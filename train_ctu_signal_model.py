@@ -13,7 +13,6 @@ Architecture:
 Dataset hierarchy:
   1. CTU-UHB signals + outcomes  → primary model training (pH-based labels)
   2. CTU-CHB annotations         → event engine (decel / accel detection)
-  3. UCI/Kaggle features         → external benchmark only (evaluated after)
 
 References:
   Chudáček et al. (2014) BMC Pregnancy and Childbirth 14:16
@@ -51,7 +50,7 @@ torch.manual_seed(42)
 np.random.seed(42)
 
 # ─── Import project modules ───────────────────────────────────────────────────
-from ctgdl_loader import CTUDataset, load_uci_kaggle_benchmark, make_synthetic_ctu_uhb
+from ctgdl_loader import CTUDataset, make_synthetic_ctu_uhb
 from ctgdl_features import (
     extract_ctg_features, extract_features_batch,
     compute_fetal_reserve_score, detect_decelerations, detect_accelerations,
@@ -148,7 +147,7 @@ feat_df["risk_label"] = feat_df["risk_label"].astype(int)
 # ─── 4. Prepare tabular feature matrix ────────────────────────────────────────
 print("\n[4/9] Preparing feature matrix for model training...")
 
-# Use extracted CTG signal features (NOT UCI tabular features)
+# Use extracted CTG signal features from raw FHR/UC waveforms
 SIGNAL_FEATURES = [
     "baseline_fhr", "mean_fhr", "std_fhr", "min_fhr", "max_fhr",
     "stv", "ltv", "fhr_entropy", "fhr_late_slope",
@@ -410,71 +409,6 @@ print(f"  Mean entropy       : {entropy_te.mean():.4f}")
 print(f"  Ensemble disagreement: {member_std.mean():.4f}")
 print(f"\n  Confusion matrix (Low / Watch / High):\n  {np.array(cm_te)}")
 
-# ─── 9. UCI/Kaggle external benchmark ─────────────────────────────────────────
-print("\n[9/9] External benchmark: UCI/Kaggle Fetal Health dataset...")
-uci_df   = load_uci_kaggle_benchmark(verbose=True)
-uci_results = {}
-
-if len(uci_df) > 0 and "fetal_health" in uci_df.columns:
-    uci_features = uci_df.columns[:-1].tolist()
-    X_uci        = uci_df[uci_features].values.astype(float)
-    y_uci        = (uci_df["fetal_health"].values - 1).astype(int)  # 0/1/2
-
-    # Map CTU feature names to UCI feature names where possible (by position)
-    # The UCI and CTU datasets have different feature sets; we evaluate how well
-    # our CTU-trained XGBoost generalises on the common SIGNAL-derived features.
-    # We retrain a minimal XGBoost on UCI for comparison only.
-    imp_uci = SimpleImputer(strategy="median")
-    sc_uci  = RobustScaler()
-
-    idx_tr_u, idx_te_u = train_test_split(
-        np.arange(len(X_uci)), test_size=0.2, stratify=y_uci, random_state=42
-    )
-    X_tr_u = sc_uci.fit_transform(imp_uci.fit_transform(X_uci[idx_tr_u]))
-    X_te_u = sc_uci.transform(imp_uci.transform(X_uci[idx_te_u]))
-    y_tr_u = y_uci[idx_tr_u]
-    y_te_u = y_uci[idx_te_u]
-
-    cw_u   = compute_class_weight("balanced", classes=np.unique(y_tr_u), y=y_tr_u)
-    sw_u   = np.array([cw_u[yi] for yi in y_tr_u])
-
-    xgb_uci = xgb.XGBClassifier(
-        n_estimators=200, max_depth=3, learning_rate=0.03,
-        subsample=0.8, colsample_bytree=0.8, min_child_weight=5,
-        gamma=1.0, reg_alpha=0.5, reg_lambda=5.0,
-        objective="multi:softprob", eval_metric="mlogloss",
-        random_state=42, n_jobs=-1, tree_method="hist",
-    )
-    xgb_uci.fit(X_tr_u, y_tr_u, sample_weight=sw_u, verbose=0)
-    uci_preds = xgb_uci.predict(X_te_u)
-    uci_probs = xgb_uci.predict_proba(X_te_u)
-
-    uci_acc  = accuracy_score(y_te_u, uci_preds)
-    uci_f1   = f1_score(y_te_u, uci_preds, average="macro", zero_division=0)
-    uci_hr   = recall_score(y_te_u, uci_preds, labels=[2], average="macro", zero_division=0)
-    try:
-        uci_auc = roc_auc_score(y_te_u, uci_probs, multi_class="ovr", average="macro")
-    except Exception:
-        uci_auc = float("nan")
-
-    uci_results = {
-        "n_samples":      len(uci_df),
-        "n_features":     len(uci_features),
-        "test_accuracy":  uci_acc,
-        "test_f1_macro":  uci_f1,
-        "test_auc_macro": uci_auc,
-        "pathological_recall": uci_hr,
-        "note": (
-            "UCI/Kaggle evaluated as EXTERNAL BENCHMARK only — not used for primary training. "
-            "Model trained independently on UCI tabular features for comparison."
-        ),
-    }
-    print(f"  UCI/Kaggle benchmark: acc={uci_acc*100:.2f}%  "
-          f"F1={uci_f1:.4f}  AUC={uci_auc:.4f}  PathRecall={uci_hr:.4f}")
-else:
-    print("  UCI/Kaggle dataset not available — skipping benchmark")
-    uci_results = {"note": "UCI/Kaggle benchmark not available"}
-
 # ─── Save results ─────────────────────────────────────────────────────────────
 print("\n  Saving ctu_model_results.json and ctu_signal_model.pkl...")
 
@@ -513,11 +447,9 @@ results = {
         "label_map":          {0: "low_risk", 1: "watch", 2: "high_risk"},
         "class_weights":      cw_dict,
     },
-    "external_benchmark_uci": uci_results,
     "dataset_hierarchy": [
         "1. CTU-UHB raw signals → PRIMARY model training (this file)",
         "2. CTU-CHB annotations → event engine (decel / accel detection in ctgdl_features.py)",
-        "3. UCI/Kaggle features → EXTERNAL benchmark only (compared above)",
     ],
     "metadata_df_records": feat_df.to_dict(orient="records"),
 }
@@ -553,5 +485,4 @@ print(f"  Dataset            : {stats['n_records']} records | method: {stats['lo
 print(f"  Held-out test F1   : {test_f1:.4f}  ← primary")
 print(f"  High-risk recall   : {test_hr*100:.2f}%  ← clinical priority")
 print(f"  AUROC (macro)      : {test_auc:.4f}")
-print(f"  UCI/Kaggle benchmark (external): F1={uci_results.get('test_f1_macro', 'N/A')}")
 print(f"{'=' * 70}")

@@ -1,7 +1,7 @@
 """
 FetalyzeAI — CTG Dataset Loader
 =================================
-Three datasets, in priority order:
+Two datasets, in priority order:
 
   1. CTU-UHB / CTU-CHB Intrapartum CTG Database  ← PRIMARY clinical model
      552 real intrapartum CTG recordings (FHR + UC @ 4 Hz, up to 90 min before delivery)
@@ -14,12 +14,6 @@ Three datasets, in priority order:
      baseline, bradycardia, tachycardia, accelerations, decelerations
      (early / late / variable / prolonged), uterine contractions, signal quality
      Source: PMC7256311 / Zenodo CTGDL FHRMA archive
-
-  3. UCI / Kaggle Fetal Health Classification Dataset  ← EXTERNAL BENCHMARK only
-     2,126 CTG records with extracted tabular features (21 features),
-     classified by expert obstetricians: Normal / Suspect / Pathological
-     Used ONLY for benchmarking — NOT for primary model training
-     Source: UCI ML Repository / Kaggle
 
 References
 ----------
@@ -64,13 +58,6 @@ ZENODO_FILES = {
     "fhrma_ano_csv":     f"{ZENODO_BASE}/CTGDL_FHRMA_ano_csv.tar.gz",
     "fhrma_proc_csv":    f"{ZENODO_BASE}/CTGDL_FHRMA_proc_csv.tar.gz",
 }
-
-# UCI/Kaggle dataset URL (fallback — local file preferred)
-UCI_KAGGLE_URL = (
-    "https://raw.githubusercontent.com/dtunnicliffe/"
-    "fetal-health-classification/main/data/fetal_health.csv"
-)
-UCI_LOCAL_PATH = Path("fetal_health.csv")
 
 # pH thresholds (FIGO / CTU-UHB clinical standards)
 PH_ACIDOSIS   = 7.05
@@ -162,31 +149,48 @@ def _extract_tar(src: Path, dest_dir: Path) -> bool:
 def _parse_ctu_uhb_header(rec) -> dict:
     """
     Extract clinical metadata from a CTU-UHB WFDB record's comments.
-    The .hea file encodes fields like: pH=7.21 BD=4.3 Apgar1=9 Apgar5=10 ...
+
+    CTU-UHB .hea files use whitespace-separated key/value pairs, e.g.:
+      pH           7.14
+      BDecf        8.14
+      Apgar1       6
+      Apgar5       8
+      Gest. weeks  37
+      Weight(g)    2660
+      Deliv. type  1
     """
     info = {"ph": float("nan"), "base_deficit": float("nan"),
             "apgar1": float("nan"), "apgar5": float("nan"),
             "gestational_age": float("nan"), "birth_weight": float("nan"),
             "delivery_type": "unknown"}
+    # Maps from the first token(s) in a comment line → info key
+    KEY_MAP = {
+        "pH":           "ph",
+        "BDecf":        "base_deficit",
+        "BE":           "base_deficit",   # fallback
+        "Apgar1":       "apgar1",
+        "Apgar5":       "apgar5",
+        "Gest.":        "gestational_age",
+        "Weight(g)":    "birth_weight",
+        "Deliv.":       "delivery_type",
+    }
     try:
         for comment in (rec.comments or []):
-            for token in comment.split():
-                k_v = token.split("=")
-                if len(k_v) != 2:
-                    continue
-                k, v = k_v[0].strip(), k_v[1].strip().rstrip(",").rstrip(".")
-                try:
-                    val = float(v)
-                except ValueError:
-                    val = v
-                key_map = {
-                    "pH": "ph", "BD": "base_deficit",
-                    "Apgar1": "apgar1", "Apgar5": "apgar5",
-                    "GA": "gestational_age", "BW": "birth_weight",
-                    "Deliv": "delivery_type",
-                }
-                if k in key_map:
-                    info[key_map[k]] = val
+            parts = comment.split()
+            if len(parts) < 2:
+                continue
+            # Try single-token key first, then two-token key
+            for n_key_tokens in (1, 2):
+                key = " ".join(parts[:n_key_tokens])
+                # strip trailing punctuation from key
+                key_clean = key.rstrip(":.,")
+                if key_clean in KEY_MAP:
+                    raw_val = parts[n_key_tokens] if len(parts) > n_key_tokens else ""
+                    try:
+                        info[KEY_MAP[key_clean]] = float(raw_val)
+                    except ValueError:
+                        info[KEY_MAP[key_clean]] = raw_val
+                    break
     except Exception:
         pass
     return info
@@ -467,44 +471,7 @@ def make_synthetic_ctu_uhb(
     return records
 
 
-# ─── 4. UCI/Kaggle benchmark loader ──────────────────────────────────────────
-
-def load_uci_kaggle_benchmark(
-    local_path: Optional[Path] = None,
-    verbose: bool = False,
-) -> pd.DataFrame:
-    """
-    Load UCI/Kaggle Fetal Health Classification dataset.
-
-    Returns a DataFrame with 21 CTG features + 'fetal_health' label (1/2/3).
-    Used ONLY as an external benchmark — NOT for primary model training.
-
-    Source: UCI ML Repository / Kaggle
-    Citation: Ayres de Campos et al. (2000) SisPorto 2.0
-    """
-    path = local_path or UCI_LOCAL_PATH
-
-    if path.exists():
-        df = pd.read_csv(path)
-        if verbose:
-            print(f"  [UCI/Kaggle] Loaded {len(df)} records from {path}")
-        return df
-
-    # Fallback: download from GitHub mirror
-    try:
-        if verbose:
-            print(f"  [UCI/Kaggle] Downloading from GitHub mirror...")
-        df = pd.read_csv(UCI_KAGGLE_URL, timeout=30)
-        df.to_csv(path, index=False)
-        if verbose:
-            print(f"  [UCI/Kaggle] Saved to {path}")
-        return df
-    except Exception as exc:
-        logger.warning("UCI/Kaggle download failed: %s", exc)
-        return pd.DataFrame()
-
-
-# ─── 5. Unified CTU-UHB Dataset class ────────────────────────────────────────
+# ─── 4. Unified CTU-UHB Dataset class ────────────────────────────────────────
 
 class CTUDataset:
     """

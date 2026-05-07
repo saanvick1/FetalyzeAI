@@ -185,7 +185,6 @@ function ResearchPanel() {
         <section className="research-card">
           <h3>Datasets used</h3>
           <ul>
-            <li>UCI / Kaggle fetal health benchmark</li>
             <li>CTGDL waveform development data</li>
             <li>CTU-UHB / CTU-CHB clinical benchmark</li>
           </ul>

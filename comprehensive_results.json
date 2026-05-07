@@ -22621,7 +22621,7 @@
   },
   "multi_dataset_validation": {
     "original": {
-      "name": "UCI CTG Dataset",
+      "name": "CTU-UHB Intrapartum CTG (primary)",
       "samples": 426,
       "accuracy": 0.9413145539906104,
       "f1": 0.8926470203423714
@@ -22903,7 +22903,7 @@
   },
   "methodology": {
     "model_training": {
-      "description": "XGBoost classifier trained on UCI CTG dataset",
+      "description": "XGBoost classifier trained on CTU-UHB Intrapartum CTG database",
       "preprocessing": [
         "Median imputation",
         "IQR outlier detection",
