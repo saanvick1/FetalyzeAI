@@ -1,10 +1,10 @@
 {
   "dataset": {
-    "name": "CTU-CHB Intrapartum CTG Database (Local + PhysioNet)",
+    "name": "CTU-CHB Intrapartum CTG Database",
     "records_total": 552,
     "records_used": 552,
-    "n_safe": 127,
-    "n_atrisk": 425,
+    "n_safe": 417,
+    "n_atrisk": 135,
     "ph_available": 552,
     "acidosis": 40,
     "borderline": 65,
@@ -12,158 +12,266 @@
     "ph_mean": 7.23,
     "ph_std": 0.105
   },
+  "model_v2": {
+    "architecture": "Soft-vote ensemble: Logistic Regression + XGBoost (tight) + Random Forest",
+    "features_used": 16,
+    "composites_removed": [
+      "decel_burden",
+      "fetal_reserve_score"
+    ],
+    "decision_threshold": 0.35,
+    "regularisation": "LR C=0.1; XGB depth=2 gamma=3 L2=8; RF min_leaf=8",
+    "overfitting_controls": [
+      "no hand-crafted composites",
+      "strong regularisation all models",
+      "high min_child_weight/min_samples_leaf",
+      "lowered decision threshold 0.35 for sensitivity",
+      "soft-vote averaging reduces variance"
+    ]
+  },
   "holdout": {
     "n_test": 111,
-    "accuracy": 0.964,
-    "balanced_accuracy": 0.9765,
-    "f1": 0.9759,
-    "precision": 1.0,
-    "sensitivity": 0.9529,
-    "specificity": 1.0,
-    "auroc": 0.9701,
-    "auprc": 0.9924,
-    "tn": 26,
-    "fp": 0,
-    "fn": 4,
-    "tp": 81
+    "accuracy": 0.4054,
+    "balanced_accuracy": 0.582,
+    "f1": 0.431,
+    "precision": 0.2809,
+    "sensitivity": 0.9259,
+    "specificity": 0.2381,
+    "auroc": 0.6878,
+    "auprc": 0.4979,
+    "brier": 0.2394,
+    "tn": 20,
+    "fp": 64,
+    "fn": 2,
+    "tp": 25
   },
   "cv5": {
-    "fold_f1": [
-      0.9581,
-      0.9634,
-      0.9576,
-      0.982,
-      0.9941
-    ],
     "fold_auc": [
-      0.9738,
-      0.9878,
-      0.9774,
-      0.9826,
-      0.9925
+      0.6217,
+      0.6305,
+      0.7372,
+      0.7153,
+      0.668
+    ],
+    "fold_f1": [
+      0.4037,
+      0.4138,
+      0.4174,
+      0.4068,
+      0.4274
     ],
     "fold_sens": [
-      0.9412,
-      0.9294,
-      0.9294,
-      0.9647,
-      0.9882
+      0.8148,
+      0.8889,
+      0.8889,
+      0.8889,
+      0.9259
     ],
     "fold_spec": [
-      0.9231,
-      1.0,
-      0.96,
-      1.0,
-      1.0
+      0.2857,
+      0.2262,
+      0.2289,
+      0.1928,
+      0.2169
     ],
     "fold_bal": [
-      0.9321,
-      0.9647,
-      0.9447,
-      0.9824,
-      0.9941
+      0.5503,
+      0.5575,
+      0.5589,
+      0.5408,
+      0.5714
     ],
-    "mean_f1": 0.971,
-    "std_f1": 0.0163,
-    "mean_auc": 0.9828,
-    "std_auc": 0.0076,
-    "mean_sens": 0.9506,
-    "std_sens": 0.0255,
-    "mean_spec": 0.9766,
-    "std_spec": 0.0346,
-    "mean_bal": 0.9636,
-    "std_bal": 0.0257
+    "mean_auc": 0.6745,
+    "std_auc": 0.0455,
+    "mean_f1": 0.4138,
+    "std_f1": 0.0083,
+    "mean_sens": 0.8815,
+    "std_sens": 0.0363,
+    "mean_spec": 0.2301,
+    "std_spec": 0.0306,
+    "mean_bal": 0.5558,
+    "std_bal": 0.0101
   },
+  "model_comparison": [
+    {
+      "model": "Logistic Regression",
+      "auroc": 0.6726,
+      "std_auc": 0.051,
+      "f1": 0.2288,
+      "sens": 0.1481
+    },
+    {
+      "model": "Random Forest",
+      "auroc": 0.6734,
+      "std_auc": 0.0438,
+      "f1": 0.4793,
+      "sens": 0.5407
+    },
+    {
+      "model": "XGBoost (tight)",
+      "auroc": 0.6663,
+      "std_auc": 0.0502,
+      "f1": 0.2581,
+      "sens": 0.1778
+    },
+    {
+      "model": "Ensemble (LR+XGB+RF)",
+      "auroc": 0.6745,
+      "std_auc": 0.0455,
+      "f1": 0.4138,
+      "sens": 0.8815
+    }
+  ],
+  "learning_curve": [
+    {
+      "frac": 0.2,
+      "n": 88,
+      "train_auc": 0.8817,
+      "val_auc": 0.7105,
+      "gap": 0.1712
+    },
+    {
+      "frac": 0.35,
+      "n": 154,
+      "train_auc": 0.8757,
+      "val_auc": 0.6987,
+      "gap": 0.177
+    },
+    {
+      "frac": 0.5,
+      "n": 220,
+      "train_auc": 0.851,
+      "val_auc": 0.692,
+      "gap": 0.159
+    },
+    {
+      "frac": 0.65,
+      "n": 287,
+      "train_auc": 0.833,
+      "val_auc": 0.6818,
+      "gap": 0.1511
+    },
+    {
+      "frac": 0.8,
+      "n": 353,
+      "train_auc": 0.8234,
+      "val_auc": 0.6806,
+      "gap": 0.1428
+    },
+    {
+      "frac": 1.0,
+      "n": 441,
+      "train_auc": 0.8082,
+      "val_auc": 0.6783,
+      "gap": 0.1299
+    }
+  ],
   "feature_importance": [
     {
-      "feature": "decel_burden",
-      "importance": 0.5429
-    },
-    {
-      "feature": "n_decels",
-      "importance": 0.2538
-    },
-    {
-      "feature": "decels_per_30min",
-      "importance": 0.0354
-    },
-    {
-      "feature": "max_decel_depth",
-      "importance": 0.0201
-    },
-    {
       "feature": "std_fhr",
-      "importance": 0.0181
+      "importance": 0.3341
     },
     {
-      "feature": "mean_decel_depth",
-      "importance": 0.0174
+      "feature": "accels_per_30min",
+      "importance": 0.3054
+    },
+    {
+      "feature": "stv",
+      "importance": 0.2963
+    },
+    {
+      "feature": "bradycardia_frac",
+      "importance": 0.2649
+    },
+    {
+      "feature": "baseline_fhr",
+      "importance": 0.22
     },
     {
       "feature": "ltv",
-      "importance": 0.0131
+      "importance": 0.1882
     },
     {
-      "feature": "mean_fhr",
-      "importance": 0.0106
+      "feature": "max_decel_depth",
+      "importance": 0.1679
     },
     {
       "feature": "n_accels",
-      "importance": 0.0106
+      "importance": 0.1652
     },
     {
-      "feature": "tachycardia_frac",
-      "importance": 0.01
+      "feature": "n_contractions",
+      "importance": 0.1589
+    },
+    {
+      "feature": "mean_decel_dur_s",
+      "importance": 0.1403
+    }
+  ],
+  "calibration_curve": [
+    {
+      "mean_pred": 0.279,
+      "frac_pos": 0.087
+    },
+    {
+      "mean_pred": 0.422,
+      "frac_pos": 0.091
+    },
+    {
+      "mean_pred": 0.5,
+      "frac_pos": 0.409
+    },
+    {
+      "mean_pred": 0.602,
+      "frac_pos": 0.227
+    },
+    {
+      "mean_pred": 0.735,
+      "frac_pos": 0.409
     }
   ],
   "ablation": [
     {
-      "group": "All features (full model)",
-      "auc_mean": 0.9828,
-      "auc_std": 0.0068,
-      "n_feats": 18
-    },
-    {
-      "group": "Without FHR baseline (mean/baseline/std)",
-      "auc_mean": 0.9827,
-      "auc_std": 0.0065,
-      "n_feats": 15
-    },
-    {
-      "group": "Without STV/LTV variability",
-      "auc_mean": 0.9836,
-      "auc_std": 0.0061,
+      "group": "All features (full ensemble)",
+      "auc_mean": 0.6711,
+      "auc_std": 0.0544,
       "n_feats": 16
     },
     {
-      "group": "Without decelerations",
-      "auc_mean": 0.96,
-      "auc_std": 0.014,
-      "n_feats": 12
+      "group": "Without decelerations (-5 feats)",
+      "auc_mean": 0.6893,
+      "auc_std": 0.0572,
+      "n_feats": 11
     },
     {
-      "group": "Without accelerations",
-      "auc_mean": 0.9827,
-      "auc_std": 0.0069,
-      "n_feats": 16
+      "group": "Without STV/LTV (-2 feats)",
+      "auc_mean": 0.6699,
+      "auc_std": 0.0591,
+      "n_feats": 14
     },
     {
-      "group": "Without contraction features",
-      "auc_mean": 0.9841,
-      "auc_std": 0.0071,
-      "n_feats": 16
+      "group": "Without accelerations (-2 feats)",
+      "auc_mean": 0.6611,
+      "auc_std": 0.0516,
+      "n_feats": 14
     },
     {
-      "group": "Without reserve score",
-      "auc_mean": 0.983,
-      "auc_std": 0.0059,
-      "n_feats": 16
+      "group": "Without contractions (-2 feats)",
+      "auc_mean": 0.6776,
+      "auc_std": 0.0532,
+      "n_feats": 14
     },
     {
-      "group": "FHR features only (no UC)",
-      "auc_mean": 0.9841,
-      "auc_std": 0.0071,
-      "n_feats": 16
+      "group": "Without FHR baseline/mean/std (-3 feats)",
+      "auc_mean": 0.6698,
+      "auc_std": 0.0498,
+      "n_feats": 13
+    },
+    {
+      "group": "Decelerations only (5 feats)",
+      "auc_mean": 0.6677,
+      "auc_std": 0.0476,
+      "n_feats": 5
     }
   ],
   "ph_histogram": [
@@ -278,8 +386,6 @@
     "n_accels",
     "accels_per_30min",
     "n_contractions",
-    "contractions_per_10min",
-    "fetal_reserve_score",
-    "decel_burden"
+    "contractions_per_10min"
   ]
 }
