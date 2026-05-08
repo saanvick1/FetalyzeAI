@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { predictLocally } from '../lib/predictor'
 import { DEFAULT_VALUES, FEATURE_GROUPS, FEATURES, PRESETS, type FeatureKey, type FeatureValues } from '../lib/features'
 import type { PredictionResult } from '../lib/api'
+import './ResultPanel.css'
 
 export function ReserveNetPredictorPanel() {
   const [values, setValues] = useState<FeatureValues>(DEFAULT_VALUES)
@@ -266,7 +267,225 @@ function ReserveNetResult({ result }: { result: PredictionResult }) {
           ))}
         </ul>
       </div>
+
+      <DoctorGraphs result={result} />
     </>
+  )
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   Doctor-facing graphs for the ReserveNet Predictor view.
+   - Radial probability donut (Normal / Suspect / Pathological)
+   - Risk-spectrum gauge with needle
+   - Confidence vs Reserve "twin-dial" panel
+   - Probability waterfall against population baseline
+   - Three vital-signs cards (FHR baseline / variability / decel pattern)
+   ─────────────────────────────────────────────────────────────────────── */
+function DoctorGraphs({ result }: { result: PredictionResult }) {
+  const accent =
+    result.risk_label === 'Pathological' ? '#dc2626'
+    : result.risk_label === 'Suspect'    ? '#d97706'
+    :                                       '#16a34a'
+
+  const atRiskPct = Math.round(
+    Math.min(100, Math.max(0, (result.prob_pathological + result.prob_suspect) * 100))
+  )
+
+  // CTU-CHB population priors (552 records, ~19% at-risk)
+  const populationAtRisk = 19
+  const delta = atRiskPct - populationAtRisk
+
+  // Radial donut (SVG) — circumference based on three slices
+  const slices = [
+    { label: 'Normal',       pct: Math.round(result.prob_normal * 100),       color: '#16a34a' },
+    { label: 'Suspect',      pct: Math.round(result.prob_suspect * 100),      color: '#d97706' },
+    { label: 'Pathological', pct: Math.round(result.prob_pathological * 100), color: '#dc2626' },
+  ]
+  const r = 64
+  const C = 2 * Math.PI * r
+  let acc = 0
+  const arcs = slices.map(s => {
+    const len = (s.pct / 100) * C
+    const offset = -acc
+    acc += len
+    return { ...s, len, offset }
+  })
+
+  return (
+    <div className="result-section">
+      <h3 className="result-section__title">Clinical Visual Snapshot</h3>
+
+      {/* Radial probability donut + twin dials */}
+      <div className="doc-radial-row">
+        <div className="doc-donut">
+          <svg viewBox="0 0 160 160" width="170" height="170">
+            <circle cx="80" cy="80" r={r} fill="none" stroke="#f3f4f6" strokeWidth="20" />
+            {arcs.map(a => (
+              <circle
+                key={a.label}
+                cx="80" cy="80" r={r}
+                fill="none" stroke={a.color} strokeWidth="20"
+                strokeDasharray={`${a.len} ${C - a.len}`}
+                strokeDashoffset={a.offset}
+                transform="rotate(-90 80 80)"
+                strokeLinecap="butt"
+              />
+            ))}
+            <text x="80" y="76" textAnchor="middle" fontSize="22" fontWeight="700" fill={accent}>
+              {atRiskPct}%
+            </text>
+            <text x="80" y="94" textAnchor="middle" fontSize="9" fill="#6b7280">
+              AT-RISK PROB
+            </text>
+          </svg>
+          <div className="doc-donut__legend">
+            {slices.map(s => (
+              <div key={s.label} className="doc-donut__lg-row">
+                <span className="doc-donut__sw" style={{ background: s.color }} />
+                <span className="doc-donut__lab">{s.label}</span>
+                <span className="doc-donut__val">{s.pct}%</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="doc-twindial">
+          <DialChart
+            value={Math.round(result.confidence * 100)}
+            label="Model Confidence"
+            color={result.uncertainty === 'low' ? '#16a34a' : result.uncertainty === 'medium' ? '#d97706' : '#dc2626'}
+            footer={`${result.uncertainty.toUpperCase()} uncertainty`}
+          />
+          <DialChart
+            value={result.fetal_reserve_score}
+            label="Fetal Reserve"
+            color={result.fetal_reserve_score >= 70 ? '#16a34a' : result.fetal_reserve_score >= 40 ? '#d97706' : '#dc2626'}
+            footer={result.fetal_reserve_score >= 70 ? 'Good reserve' : result.fetal_reserve_score >= 40 ? 'Reduced reserve' : 'Low reserve'}
+          />
+        </div>
+      </div>
+
+      {/* Risk-spectrum gauge */}
+      <div className="doc-spectrum">
+        <div className="doc-spectrum__label">Where this case sits on the at-risk spectrum</div>
+        <div className="doc-spectrum__bar">
+          <div className="doc-spectrum__seg doc-spectrum__seg--g" style={{ flex: 1 }} />
+          <div className="doc-spectrum__seg doc-spectrum__seg--y" style={{ flex: 1 }} />
+          <div className="doc-spectrum__seg doc-spectrum__seg--r" style={{ flex: 1 }} />
+          <div className="doc-spectrum__needle" style={{ left: `${Math.min(99, Math.max(1, atRiskPct))}%` }}>
+            <div className="doc-spectrum__needle-pin" style={{ background: accent }} />
+            <div className="doc-spectrum__needle-lbl" style={{ color: accent }}>{atRiskPct}%</div>
+          </div>
+        </div>
+        <div className="doc-spectrum__ticks">
+          <span>0% Low</span><span>33%</span><span>66%</span><span>100% High</span>
+        </div>
+      </div>
+
+      {/* Population-baseline waterfall */}
+      <div className="doc-waterfall">
+        <div className="doc-waterfall__title">Comparison with CTU-CHB population baseline</div>
+        <div className="doc-waterfall__rows">
+          <div className="doc-wf-row">
+            <div className="doc-wf-row__label">Population at-risk</div>
+            <div className="doc-wf-row__track">
+              <div className="doc-wf-row__fill" style={{ width: `${populationAtRisk}%`, background: '#9ca3af' }} />
+              <span className="doc-wf-row__pct">{populationAtRisk}%</span>
+            </div>
+          </div>
+          <div className="doc-wf-row">
+            <div className="doc-wf-row__label">This case at-risk</div>
+            <div className="doc-wf-row__track">
+              <div className="doc-wf-row__fill" style={{ width: `${atRiskPct}%`, background: accent }} />
+              <span className="doc-wf-row__pct">{atRiskPct}%</span>
+            </div>
+          </div>
+          <div className="doc-wf-row">
+            <div className="doc-wf-row__label">Δ vs population</div>
+            <div className="doc-wf-row__track">
+              <div
+                className="doc-wf-row__fill"
+                style={{
+                  width: `${Math.min(90, Math.abs(delta))}%`,
+                  background: delta >= 0 ? '#dc2626' : '#16a34a',
+                }}
+              />
+              <span className="doc-wf-row__pct">{delta >= 0 ? '+' : ''}{delta} pts</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Vital-signs cards */}
+      <div className="doc-vitals">
+        {[
+          {
+            label: 'At-Risk Probability',
+            value: `${atRiskPct}`,
+            units: '%',
+            status: atRiskPct >= 50 ? 'high' : atRiskPct >= 25 ? 'watch' : 'normal',
+            good: '< 20%',
+          },
+          {
+            label: 'Confidence',
+            value: `${(result.confidence * 100).toFixed(0)}`,
+            units: '%',
+            status: result.uncertainty === 'low' ? 'normal' : result.uncertainty === 'medium' ? 'watch' : 'high',
+            good: '≥ 70%',
+          },
+          {
+            label: 'Decision',
+            value:
+              result.risk_label === 'Pathological' ? 'Urgent'
+              : result.risk_label === 'Suspect'    ? 'Monitor'
+              :                                       'Routine',
+            units: '',
+            status:
+              result.risk_label === 'Pathological' ? 'high'
+              : result.risk_label === 'Suspect'    ? 'watch'
+              :                                       'normal',
+            good: 'Routine',
+          },
+        ].map(v => (
+          <div key={v.label} className={`doc-vital doc-vital--${v.status}`}>
+            <div className="doc-vital__lab">{v.label}</div>
+            <div className="doc-vital__val">{v.value} <span>{v.units}</span></div>
+            <div className="doc-vital__good">Reassuring: {v.good}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function DialChart({ value, label, color, footer }: { value: number; label: string; color: string; footer: string }) {
+  // Half-circle gauge from 0 to 100
+  const v = Math.max(0, Math.min(100, value))
+  const angle = -90 + (v / 100) * 180  // -90 ... +90 degrees
+  const r = 50
+  const cx = 60, cy = 60
+  const rad = (angle * Math.PI) / 180
+  const nx = cx + r * Math.cos(rad)
+  const ny = cy + r * Math.sin(rad)
+  // Track arc as path
+  const arc = (frac: number, stroke: string) => {
+    const a = -180 + frac * 180
+    const ax = cx + r * Math.cos((a * Math.PI) / 180)
+    const ay = cy + r * Math.sin((a * Math.PI) / 180)
+    return <path d={`M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${ax} ${ay}`} stroke={stroke} strokeWidth="10" fill="none" strokeLinecap="round" />
+  }
+  return (
+    <div className="doc-dial">
+      <svg viewBox="0 0 120 75" width="135" height="84">
+        {arc(1, '#f3f4f6')}
+        {arc(v / 100, color)}
+        <line x1={cx} y1={cy} x2={nx} y2={ny} stroke={color} strokeWidth="2.5" strokeLinecap="round" />
+        <circle cx={cx} cy={cy} r="4" fill={color} />
+        <text x="60" y="58" textAnchor="middle" fontSize="16" fontWeight="700" fill={color}>{Math.round(v)}</text>
+      </svg>
+      <div className="doc-dial__lab">{label}</div>
+      <div className="doc-dial__foot" style={{ color }}>{footer}</div>
+    </div>
   )
 }
 
