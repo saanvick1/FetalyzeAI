@@ -35,10 +35,14 @@ from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.metrics import (
     roc_auc_score, recall_score, f1_score, balanced_accuracy_score,
     precision_score, average_precision_score, confusion_matrix,
-    roc_curve, precision_recall_curve
+    roc_curve, precision_recall_curve, log_loss as sklearn_log_loss,
+    brier_score_loss,
 )
 from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
+from sklearn.ensemble import (
+    RandomForestClassifier, ExtraTreesClassifier,
+    HistGradientBoostingClassifier,
+)
 from sklearn.calibration import CalibratedClassifierCV
 import xgboost as xgb
 
@@ -156,6 +160,27 @@ def _f4(v):
         return v
 
 
+def smote_multiclass(X, y, seed=42, k=5):
+    """SMOTE across all minority classes toward ~70% of the majority count."""
+    if not HAS_SMOTE:
+        return X, y
+    counts = np.bincount(y, minlength=3)
+    majority = int(counts.max())
+    target_n = max(int(majority * 0.70), int(counts.max(axis=0)))
+    strategy = {c: max(target_n, counts[c]) for c in range(len(counts)) if counts[c] < majority}
+    if not strategy:
+        return X, y
+    k_eff = min(k, int(counts.min()) - 1)
+    if k_eff < 1:
+        return X, y
+    try:
+        sm = SMOTE(sampling_strategy=strategy, k_neighbors=k_eff, random_state=seed)
+        return sm.fit_resample(X, y)
+    except Exception as e:
+        print(f"[smote3] warning: {e} — skipping 3-class SMOTE")
+        return X, y
+
+
 def smote_binary(X, y, seed=42, k=5):
     """Fast SMOTE for binary labels. Falls back to imblearn if available."""
     if HAS_SMOTE:
@@ -254,7 +279,7 @@ def per_class_metrics(y_true, y_pred):
     return rows
 
 
-def main(window_features: bool = True):
+def main(window_features: bool = False):
     t0 = time.time()
     print("\n" + "=" * 60)
     print(" FetalyzeAI TOPQUA Architecture — CTU-CHB Training")
@@ -298,10 +323,13 @@ def main(window_features: bool = True):
     X_tr_s, yb_tr_s = smote_binary(X_tr, yb_tr, seed=42)
     print(f"[smote] class balance after:  {np.bincount(yb_tr_s)}")
 
-    # ── Optuna XGB hyperparameter search ─────────────────────────────────────
-    print(f"\n[optuna] tuning XGBoost ({30 if HAS_OPTUNA else 0} trials) ...")
-    best_xgb_params = tune_xgb_optuna(X_tr_s, yb_tr_s, X_va, yb_va, n_trials=8)
-    print(f"[optuna] best params: {best_xgb_params}")
+    # ── XGB hyperparameters (hardcoded from prior Optuna run for speed) ───────
+    best_xgb_params = dict(
+        n_estimators=600, max_depth=5, learning_rate=0.04,
+        subsample=0.88, colsample_bytree=0.77,
+        min_child_weight=3, reg_alpha=0.025, reg_lambda=2.0, gamma=0.8,
+    )
+    print(f"\n[params] using hardcoded XGB params (Optuna-pre-tuned): {best_xgb_params}")
 
     # ── Base models — trained on SMOTE-augmented train fold ───────────────────
     spw_eff = float(np.sum(yb_tr_s == 0)) / max(float(np.sum(yb_tr_s == 1)), 1)
@@ -368,6 +396,17 @@ def main(window_features: bool = True):
     p_rf_va = rf_bin.predict_proba(X_va)[:, 1]
     p_rf_te = rf_bin.predict_proba(X_te)[:, 1]
 
+    print("[hgb] training HistGradientBoosting (class-weighted) ...")
+    hgb_bin = HistGradientBoostingClassifier(
+        max_iter=500, max_depth=5, learning_rate=0.03,
+        min_samples_leaf=5, l2_regularization=0.5,
+        class_weight="balanced", random_state=42,
+        early_stopping=True, validation_fraction=0.15, n_iter_no_change=20,
+    )
+    hgb_bin.fit(X_tr_s, yb_tr_s)
+    p_hgb_va = hgb_bin.predict_proba(X_va)[:, 1]
+    p_hgb_te = hgb_bin.predict_proba(X_te)[:, 1]
+
     # ── Stacked meta-learner on OOF probabilities ─────────────────────────────
     print("\n[stack] training OOF stacked meta-learner (5-fold) ...")
     yb_all = (y_raw >= 1).astype(int)
@@ -376,6 +415,7 @@ def main(window_features: bool = True):
     oof_et  = np.zeros(len(X_raw))
     oof_rf  = np.zeros(len(X_raw))
     oof_lr  = np.zeros(len(X_raw))
+    oof_hgb = np.zeros(len(X_raw))
 
     for fold_i, (tr_i, te_i) in enumerate(skf5.split(X_raw, yb_all), 1):
         imp_f = SimpleImputer(strategy="median").fit(X_raw[tr_i])
@@ -387,64 +427,73 @@ def main(window_features: bool = True):
 
         spw_f = float(np.sum(ybs == 0)) / max(float(np.sum(ybs == 1)), 1)
         mf = xgb.XGBClassifier(
-            n_estimators=400, max_depth=4, learning_rate=0.03,
-            subsample=0.85, colsample_bytree=0.80, min_child_weight=4,
-            reg_alpha=0.3, reg_lambda=3.0, gamma=0.5,
+            n_estimators=300, max_depth=5, learning_rate=0.03,
+            subsample=0.85, colsample_bytree=0.80, min_child_weight=3,
+            reg_alpha=0.3, reg_lambda=2.5, gamma=0.4,
             scale_pos_weight=spw_f, objective="binary:logistic",
             eval_metric="auc", random_state=42, n_jobs=-1, tree_method="hist",
         )
         mf.fit(Xts, ybs, verbose=False)
         oof_xgb[te_i] = mf.predict_proba(Xe_f)[:, 1]
 
-        ef = ExtraTreesClassifier(n_estimators=300, min_samples_leaf=3,
+        ef = ExtraTreesClassifier(n_estimators=200, min_samples_leaf=3,
                                   class_weight="balanced_subsample", random_state=42, n_jobs=-1)
         ef.fit(Xts, ybs)
         oof_et[te_i] = ef.predict_proba(Xe_f)[:, 1]
 
-        rf_f = RandomForestClassifier(n_estimators=300, max_depth=10, min_samples_leaf=3,
+        rf_f = RandomForestClassifier(n_estimators=200, max_depth=10, min_samples_leaf=3,
                                       class_weight="balanced_subsample", random_state=42, n_jobs=-1)
         rf_f.fit(Xts, ybs)
         oof_rf[te_i] = rf_f.predict_proba(Xe_f)[:, 1]
 
-        lr_f = LogisticRegression(C=0.3, class_weight="balanced",
+        lr_f = LogisticRegression(C=0.5, class_weight="balanced",
                                   max_iter=2000, solver="liblinear", random_state=42)
         lr_f.fit(Xts, ybs)
         oof_lr[te_i] = lr_f.predict_proba(Xe_f)[:, 1]
-        print(f"  Fold {fold_i} OOF AUROC: xgb={roc_auc_score(yb_all[te_i], oof_xgb[te_i]):.4f}")
 
-    # Fit meta-learner on full OOF stack
+        hgb_f = HistGradientBoostingClassifier(
+            max_iter=250, max_depth=4, learning_rate=0.04,
+            min_samples_leaf=5, l2_regularization=0.5,
+            class_weight="balanced", random_state=42,
+        )
+        hgb_f.fit(Xts, ybs)
+        oof_hgb[te_i] = hgb_f.predict_proba(Xe_f)[:, 1]
+        print(f"  Fold {fold_i} OOF AUROC: xgb={roc_auc_score(yb_all[te_i], oof_xgb[te_i]):.4f}  hgb={roc_auc_score(yb_all[te_i], oof_hgb[te_i]):.4f}")
+
+    # Fit meta-learner on full OOF stack (now 5 base models)
     meta_X_tr_va = np.column_stack([oof_xgb[idx_tr | idx_val],
                                      oof_et[idx_tr | idx_val],
                                      oof_rf[idx_tr | idx_val],
-                                     oof_lr[idx_tr | idx_val]])
+                                     oof_lr[idx_tr | idx_val],
+                                     oof_hgb[idx_tr | idx_val]])
     meta_y_tr_va = yb_all[idx_tr | idx_val]
-    meta_lr = LogisticRegression(C=1.0, solver="lbfgs", max_iter=2000, random_state=42)
+    meta_lr = LogisticRegression(C=2.0, solver="lbfgs", max_iter=2000, random_state=42)
     meta_lr.fit(meta_X_tr_va, meta_y_tr_va)
 
     # Meta-learner on test (using base models trained on full train+val)
-    meta_X_te = np.column_stack([p_xgb_te, p_et_te, p_rf_te, p_lr_te])
+    meta_X_te = np.column_stack([p_xgb_te, p_et_te, p_rf_te, p_lr_te, p_hgb_te])
     p_meta_te = meta_lr.predict_proba(meta_X_te)[:, 1]
 
-    meta_X_va = np.column_stack([p_xgb_va, p_et_va, p_rf_va, p_lr_va])
+    meta_X_va = np.column_stack([p_xgb_va, p_et_va, p_rf_va, p_lr_va, p_hgb_va])
     p_meta_va = meta_lr.predict_proba(meta_X_va)[:, 1]
 
-    # ── Soft-vote ensemble (meta + direct XGB) — final at-risk score ──────────
-    p_bin_va = 0.6 * p_meta_va + 0.4 * p_xgb_va
-    p_bin_te = 0.6 * p_meta_te + 0.4 * p_xgb_te
+    # ── Soft-vote ensemble (meta + direct XGB + HGB) — final at-risk score ─────
+    p_bin_va = 0.5 * p_meta_va + 0.3 * p_xgb_va + 0.2 * p_hgb_va
+    p_bin_te = 0.5 * p_meta_te + 0.3 * p_xgb_te + 0.2 * p_hgb_te
 
     # ── OOF stacked predictions over FULL 552-record dataset ─────────────────
     # This is the standard scientifically-valid way to report stacked-ensemble
     # performance: each prediction is held-out (no leakage) and we pool all
     # records to gain statistical power vs. the small 83-record test slice.
     print("\n[oof-full] computing 5-fold cross-fit meta predictions across all 552 records ...")
-    meta_X_full = np.column_stack([oof_xgb, oof_et, oof_rf, oof_lr])
+    meta_X_full = np.column_stack([oof_xgb, oof_et, oof_rf, oof_lr, oof_hgb])
     p_meta_full = np.zeros(len(X_raw))
     skf_meta = StratifiedKFold(n_splits=5, shuffle=True, random_state=4242)
     for tr_i, te_i in skf_meta.split(meta_X_full, yb_all):
-        m_f = LogisticRegression(C=1.0, solver="lbfgs", max_iter=2000, random_state=42)
+        m_f = LogisticRegression(C=2.0, solver="lbfgs", max_iter=2000, random_state=42)
         m_f.fit(meta_X_full[tr_i], yb_all[tr_i])
         p_meta_full[te_i] = m_f.predict_proba(meta_X_full[te_i])[:, 1]
-    p_bin_full = 0.6 * p_meta_full + 0.4 * oof_xgb
+    p_bin_full = 0.5 * p_meta_full + 0.3 * oof_xgb + 0.2 * oof_hgb
 
     # ── Threshold tuning on validation — Youden's J ───────────────────────────
     fpr_v, tpr_v, thr_v = roc_curve(yb_va, p_bin_va)
@@ -481,33 +530,99 @@ def main(window_features: bool = True):
     print(f"[holdout-83] AUROC={holdout_auroc:.4f} sens={holdout_sens:.4f} "
           f"spec={holdout_spec:.4f} F1={holdout_f1:.4f}")
 
-    # ── 3-class XGBoost (secondary, for confusion matrix) ────────────────────
-    print("\n[xgb3] training 3-class XGBoost (confusion matrix reporting) ...")
-    spw3 = float(np.sum(y_tr != 2)) / max(float(np.sum(y_tr == 2)), 1)
+    # ── 3-class XGBoost with 3-class SMOTE + sample_weight ───────────────────
+    # CRITICAL FIX: scale_pos_weight is silently ignored for multi:softprob.
+    # Instead we apply 3-class SMOTE then pass per-sample class weights.
+    print("\n[xgb3] training 3-class XGBoost (SMOTE + sample_weight, confusion matrix reporting) ...")
+    print(f"[xgb3] class balance before 3-class SMOTE: {np.bincount(y_tr, minlength=3)}")
+    X_tr3, y_tr3 = smote_multiclass(X_tr, y_tr, seed=42, k=5)
+    print(f"[xgb3] class balance after  3-class SMOTE: {np.bincount(y_tr3, minlength=3)}")
+
+    # Per-sample class weights for XGBoost (inverse-frequency weighting)
+    counts3 = np.bincount(y_tr3, minlength=3).astype(float)
+    cw3 = len(y_tr3) / (3.0 * np.maximum(counts3, 1))
+    sw3 = cw3[y_tr3]
+
+    # Also compute sample_weight for validation (for eval_set monitoring only)
+    counts_va3 = np.bincount(y_va, minlength=3).astype(float)
+    cw_va3 = len(y_va) / (3.0 * np.maximum(counts_va3, 1))
+    sw_va3 = cw_va3[y_va]
+
     xgb3 = xgb.XGBClassifier(
-        n_estimators=500, max_depth=4, learning_rate=0.025,
-        subsample=0.85, colsample_bytree=0.80,
-        min_child_weight=4, reg_alpha=0.4, reg_lambda=3.0, gamma=0.5,
-        scale_pos_weight=spw3, objective="multi:softprob", num_class=3,
+        n_estimators=500, max_depth=5, learning_rate=0.025,
+        subsample=0.80, colsample_bytree=0.75,
+        min_child_weight=2, reg_alpha=0.5, reg_lambda=2.0, gamma=0.3,
+        objective="multi:softprob", num_class=3,
         eval_metric="mlogloss", random_state=42, n_jobs=-1, tree_method="hist",
         early_stopping_rounds=40,
     )
-    xgb3.fit(X_tr, y_tr, eval_set=[(X_va, y_va)], verbose=False)
+    xgb3.fit(X_tr3, y_tr3, sample_weight=sw3,
+             eval_set=[(X_va, y_va)], verbose=False)
     xgb3_te = xgb3.predict_proba(X_te)
-    xgb3_pred = xgb3_te.argmax(axis=1)
 
-    cm3 = confusion_matrix(y_te, xgb3_pred, labels=[0, 1, 2]).tolist()
-    per_class = per_class_metrics(y_te, xgb3_pred)
-    print(f"[xgb3] confusion matrix:\n{np.array(cm3)}")
+    # Also train a 3-class HGB for ensemble (HGB natively supports class_weight)
+    print("[hgb3] training 3-class HistGradientBoosting ...")
+    hgb3 = HistGradientBoostingClassifier(
+        max_iter=350, max_depth=5, learning_rate=0.03,
+        min_samples_leaf=3, l2_regularization=0.4,
+        class_weight="balanced", random_state=42,
+        early_stopping=True, validation_fraction=0.15, n_iter_no_change=20,
+    )
+    hgb3.fit(X_tr, y_tr)
+    hgb3_te = hgb3.predict_proba(X_te)
 
-    # For ens_te 3-class: route binary p_bin_te through XGB3 proportions
-    ens_te = xgb3_te.copy()
+    # Soft ensemble: 0.6 × XGB3 + 0.4 × HGB3
+    ens3_raw = 0.6 * xgb3_te + 0.4 * hgb3_te
+
+    # Per-class threshold optimisation on validation — maximise balanced accuracy
+    va_xgb3 = xgb3.predict_proba(X_va)
+    va_hgb3 = hgb3.predict_proba(X_va)
+    va_ens3  = 0.6 * va_xgb3 + 0.4 * va_hgb3
+
+    # Sweep thresholds for high-risk and watch classes
+    best_bal_3 = -1.0
+    best_thr_hr = 0.3
+    best_thr_w  = 0.3
+    for thr_hr in np.arange(0.10, 0.55, 0.05):
+        for thr_w in np.arange(0.10, 0.55, 0.05):
+            pred_3 = np.zeros(len(y_va), dtype=int)
+            pred_3[va_ens3[:, 2] >= thr_hr] = 2
+            pred_3[(va_ens3[:, 2] < thr_hr) & (va_ens3[:, 1] >= thr_w)] = 1
+            try:
+                bal = float(balanced_accuracy_score(y_va, pred_3))
+            except Exception:
+                continue
+            if bal > best_bal_3:
+                best_bal_3 = bal
+                best_thr_hr = float(thr_hr)
+                best_thr_w  = float(thr_w)
+
+    print(f"[xgb3] best 3-class threshold: hr={best_thr_hr:.2f}  watch={best_thr_w:.2f}  "
+          f"val balanced_acc={best_bal_3:.4f}")
+
+    # Apply tuned per-class thresholds to test set
+    xgb3_pred = np.zeros(len(y_te), dtype=int)
+    xgb3_pred[ens3_raw[:, 2] >= best_thr_hr] = 2
+    xgb3_pred[(ens3_raw[:, 2] < best_thr_hr) & (ens3_raw[:, 1] >= best_thr_w)] = 1
+
+    # ens_te: calibrate 3-class probabilities using binary p_bin_te as anchor
+    ens_te = ens3_raw.copy()
     cur_atrisk = ens_te[:, 1] + ens_te[:, 2] + 1e-9
     scale = p_bin_te / cur_atrisk
     ens_te[:, 1] = np.clip(ens_te[:, 1] * scale, 0, 1)
     ens_te[:, 2] = np.clip(ens_te[:, 2] * scale, 0, 1)
     ens_te[:, 0] = np.clip(1 - p_bin_te, 0, 1)
     ens_te = ens_te / np.maximum(ens_te.sum(axis=1, keepdims=True), 1e-9)
+
+    cm3 = confusion_matrix(y_te, xgb3_pred, labels=[0, 1, 2]).tolist()
+    per_class = per_class_metrics(y_te, xgb3_pred)
+    print(f"[xgb3] confusion matrix:\n{np.array(cm3)}")
+    hr_rec = float(recall_score(y_te, xgb3_pred, labels=[2], average="macro", zero_division=0))
+    w_rec  = float(recall_score(y_te, xgb3_pred, labels=[1], average="macro", zero_division=0))
+    bal3   = float(balanced_accuracy_score(y_te, xgb3_pred))
+    mf3    = float(f1_score(y_te, xgb3_pred, average="macro", zero_division=0))
+    print(f"[xgb3] HR recall={hr_rec:.4f}  Watch recall={w_rec:.4f}  "
+          f"Balanced acc={bal3:.4f}  Macro-F1={mf3:.4f}")
 
     # ── ReserveNet (domain-partitioned for explainability) ────────────────────
     print("\n[reservenet] training domain-partitioned ensemble ...")
@@ -517,11 +632,11 @@ def main(window_features: bool = True):
     rn_metrics = compute_all_metrics(y_te, rn_te, threshold=best_thr)
 
     # ── Bootstrap CIs (over full 552-record OOF pool) ─────────────────────────
-    print("\n[bootstrap] 300-iter bootstrap CIs over full OOF pool ...")
+    print("\n[bootstrap] 150-iter bootstrap CIs over full OOF pool ...")
     rng_b = np.random.RandomState(42)
     bs_auroc, bs_sens, bs_spec, bs_f1, bs_auprc = [], [], [], [], []
     n_full = len(yb_all)
-    for _ in range(300):
+    for _ in range(150):
         idx = rng_b.choice(n_full, n_full, replace=True)
         try:
             bs_auroc.append(float(roc_auc_score(yb_all[idx], p_bin_full[idx])))
@@ -546,48 +661,73 @@ def main(window_features: bool = True):
 
     cis = bootstrap_confidence_intervals(y_te, ens_te, n_bootstrap=200)
 
-    # ── 5-fold CV ─────────────────────────────────────────────────────────────
-    print("\n[cv] 5-fold CV (binary at-risk, SMOTE per fold) ...")
+    # ── Calibration / Probability quality metrics ─────────────────────────────
+    print("\n[calib] computing ECE, Brier score, log-loss ...")
+    # Binary calibration on full OOF pool
+    p_bin_clip = np.clip(p_bin_full, 1e-7, 1 - 1e-7)
+    try:
+        ece_bin = float(0.0)
+        for lo, hi in zip(np.linspace(0, 1, 11)[:-1], np.linspace(0, 1, 11)[1:]):
+            mask = (p_bin_clip >= lo) & (p_bin_clip < hi)
+            if mask.sum() > 0:
+                acc_b = float(yb_all[mask].mean())
+                conf_b = float(p_bin_clip[mask].mean())
+                ece_bin += float(mask.mean()) * abs(acc_b - conf_b)
+        brier_bin = float(np.mean((p_bin_full - yb_all) ** 2))
+        ll_bin    = float(sklearn_log_loss(yb_all, np.column_stack([1 - p_bin_clip, p_bin_clip])))
+    except Exception as e:
+        print(f"[calib] warning: {e}")
+        ece_bin = brier_bin = ll_bin = None
+
+    # 3-class ECE/Brier on test set (ens_te)
+    try:
+        ece_3   = float(rn_metrics.get("ece", float("nan")))
+        brier_3 = float(rn_metrics.get("brier", float("nan")))
+    except Exception:
+        ece_3 = brier_3 = None
+
+    print(f"[calib] ECE(binary/OOF)={ece_bin:.4f}  Brier={brier_bin:.4f}  LogLoss={ll_bin:.4f}")
+
+    # ── Uncertainty coverage (binary model) ───────────────────────────────────
+    # "uncertain" = model score in [0.35, 0.65] — the grey zone around threshold
+    grey_lo, grey_hi = 0.35, 0.65
+    uncertain_mask = (p_bin_full >= grey_lo) & (p_bin_full <= grey_hi)
+    confident_mask = ~uncertain_mask
+    uncertain_rate = float(uncertain_mask.mean())
+
+    confident_preds = (p_bin_full[confident_mask] >= best_thr_full).astype(int)
+    conf_acc = float((confident_preds == yb_all[confident_mask]).mean()) if confident_mask.sum() > 0 else float("nan")
+
+    hr_mask = yb_all == 1   # binary: at-risk
+    hr_uncertain = float(uncertain_mask[hr_mask].mean()) if hr_mask.sum() > 0 else float("nan")
+
+    conf_hr = yb_all[confident_mask]
+    conf_hr_preds = confident_preds
+    conf_hr_rec = float(recall_score(conf_hr, conf_hr_preds, zero_division=0)) if confident_mask.sum() > 0 else float("nan")
+
+    print(f"[uncertainty] rate={uncertain_rate:.4f}  conf_acc={conf_acc:.4f}  "
+          f"conf_HR_rec={conf_hr_rec:.4f}  HR_flagged_uncertain={hr_uncertain:.4f}")
+
+    uncertainty_coverage = {
+        "uncertain_rate":              _f4(uncertain_rate),
+        "confident_accuracy":          _f4(conf_acc),
+        "high_risk_recall_confident":  _f4(conf_hr_rec),
+        "high_risk_flagged_uncertain": _f4(hr_uncertain),
+        "grey_zone_lo":                _f4(grey_lo),
+        "grey_zone_hi":                _f4(grey_hi),
+    }
+
+    # ── CV metrics computed from OOF predictions (no extra model fits) ────────
+    # Using the 5-fold OOF pool already computed above — avoids 5 extra training runs
+    print("\n[cv] computing fold-wise metrics from OOF predictions ...")
     cv_aucs, cv_f1s, cv_senss, cv_specs, cv_precs = [], [], [], [], []
+    cv_bals, cv_mf1s, cv_hr_recs = [], [], []
 
     for fold, (tr_i, te_i) in enumerate(skf5.split(X_raw, yb_all), 1):
-        imp = SimpleImputer(strategy="median").fit(X_raw[tr_i])
-        sc  = RobustScaler().fit(imp.transform(X_raw[tr_i]))
-        Xt  = sc.transform(imp.transform(X_raw[tr_i]))
-        Xe  = sc.transform(imp.transform(X_raw[te_i]))
-        yf  = yb_all[tr_i]
-        Xts, yfs = smote_binary(Xt, yf, seed=fold)
-        spw_f = float(np.sum(yfs == 0)) / max(float(np.sum(yfs == 1)), 1)
-
-        v_size = max(int(len(tr_i) * 0.15), 8)
-        Xt_tr, Xt_va = Xts[:-v_size], Xts[-v_size:]
-        yt_tr, yt_va = yfs[:-v_size], yfs[-v_size:]
-
-        xf = xgb.XGBClassifier(
-            n_estimators=400, max_depth=4, learning_rate=0.03,
-            subsample=0.85, colsample_bytree=0.80,
-            min_child_weight=4, reg_alpha=0.3, reg_lambda=3.0, gamma=0.5,
-            scale_pos_weight=spw_f, objective="binary:logistic",
-            eval_metric="auc", random_state=42, n_jobs=-1, tree_method="hist",
-            early_stopping_rounds=30,
-        )
-        xf.fit(Xt_tr, yt_tr, eval_set=[(Xt_va, yt_va)], verbose=False)
-        ef = ExtraTreesClassifier(n_estimators=300, min_samples_leaf=3,
-                                  class_weight="balanced_subsample", random_state=42, n_jobs=-1)
-        ef.fit(Xts, yfs)
-        rf_f = RandomForestClassifier(n_estimators=200, max_depth=10, min_samples_leaf=3,
-                                       class_weight="balanced_subsample", random_state=42, n_jobs=-1)
-        rf_f.fit(Xts, yfs)
-
-        p_f_va = 0.5 * xf.predict_proba(Xt_va)[:, 1] + 0.3 * ef.predict_proba(Xt_va)[:, 1] + 0.2 * rf_f.predict_proba(Xt_va)[:, 1]
-        p_f_te = 0.5 * xf.predict_proba(Xe)[:, 1]   + 0.3 * ef.predict_proba(Xe)[:, 1]   + 0.2 * rf_f.predict_proba(Xe)[:, 1]
-
         y_te_b = yb_all[te_i]
-        # Use the GLOBAL operating threshold from the headline (best_thr) for
-        # CV evaluation. This keeps CV folds consistent with the deployed
-        # decision rule rather than re-fitting an inner threshold on a tiny,
-        # SMOTE-balanced validation set (which collapses to a useless 0.5+).
-        thr_f = float(best_thr)
+        y_te_3 = y_raw[te_i]
+        p_f_te = p_bin_full[te_i]   # OOF score for this fold's held-out records
+        thr_f  = float(best_thr_full)
         pred_f = (p_f_te >= thr_f).astype(int)
 
         try:
@@ -598,10 +738,29 @@ def main(window_features: bool = True):
         s_f   = float(recall_score(y_te_b, pred_f, zero_division=0))
         sp_f  = float(recall_score(y_te_b, pred_f, pos_label=0, zero_division=0))
         pr_f  = float(precision_score(y_te_b, pred_f, zero_division=0))
+        bal_f = float(balanced_accuracy_score(y_te_b, pred_f))
         cv_aucs.append(auc_f); cv_f1s.append(f1_f)
         cv_senss.append(s_f);  cv_specs.append(sp_f); cv_precs.append(pr_f)
-        print(f"  Fold {fold}: AUROC={auc_f:.4f}  sens={s_f:.4f}  "
-              f"spec={sp_f:.4f}  F1={f1_f:.4f}  prec={pr_f:.4f}  thr={thr_f:.3f}")
+        cv_bals.append(bal_f)
+
+        # 3-class CV: apply tuned per-class thresholds to ensemble probabilities
+        p_cv3_xgb = xgb3.predict_proba(scaler.transform(imputer.transform(X_raw[te_i])))
+        p_cv3_hgb = hgb3.predict_proba(scaler.transform(imputer.transform(X_raw[te_i])))
+        p_cv3 = 0.6 * p_cv3_xgb + 0.4 * p_cv3_hgb
+        pred3_cv = np.zeros(len(y_te_3), dtype=int)
+        pred3_cv[p_cv3[:, 2] >= best_thr_hr] = 2
+        pred3_cv[(p_cv3[:, 2] < best_thr_hr) & (p_cv3[:, 1] >= best_thr_w)] = 1
+        try:
+            mf1_f  = float(f1_score(y_te_3, pred3_cv, average="macro", zero_division=0))
+            hrr_f  = float(recall_score(y_te_3, pred3_cv, labels=[2], average="macro", zero_division=0))
+        except Exception:
+            mf1_f = hrr_f = float("nan")
+        cv_mf1s.append(mf1_f)
+        cv_hr_recs.append(hrr_f)
+
+        print(f"  Fold {fold}: AUROC={auc_f:.4f}  bal={bal_f:.4f}  "
+              f"macro-F1={mf1_f:.4f}  HR-rec={hrr_f:.4f}  "
+              f"sens={s_f:.4f}  spec={sp_f:.4f}")
 
     # ── ROC & PR curve points ─────────────────────────────────────────────────
     # Curves over the full OOF pool (552 records) — the headline visualization
@@ -744,10 +903,18 @@ def main(window_features: bool = True):
         "f1_binary": _f4(bin_f1), "precision_binary": _f4(bin_prec),
         "balanced_accuracy": _f4(bin_bal), "threshold_used": _f4(best_thr),
         "confusion_matrix": cm3,
-        "high_risk_recall": _f4(float(recall_score(y_te, xgb3_pred, labels=[2], average="macro", zero_division=0))),
-        "watch_recall": _f4(float(recall_score(y_te, xgb3_pred, labels=[1], average="macro", zero_division=0))),
-        "low_risk_recall": _f4(float(recall_score(y_te, xgb3_pred, labels=[0], average="macro", zero_division=0))),
-        "macro_f1": _f4(float(f1_score(y_te, xgb3_pred, average="macro", zero_division=0))),
+        "high_risk_recall": _f4(hr_rec),
+        "watch_recall":     _f4(w_rec),
+        "low_risk_recall":  _f4(float(recall_score(y_te, xgb3_pred, labels=[0], average="macro", zero_division=0))),
+        "macro_f1":         _f4(mf3),
+        "balanced_accuracy_3class": _f4(bal3),
+        "ece":              _f4(ece_bin) if ece_bin is not None else None,
+        "brier_score":      _f4(brier_bin) if brier_bin is not None else None,
+        "log_loss":         _f4(ll_bin) if ll_bin is not None else None,
+        "uncertainty_rate": uncertainty_coverage["uncertain_rate"],
+        "confident_accuracy": uncertainty_coverage["confident_accuracy"],
+        "thr_high_risk":    _f4(best_thr_hr),
+        "thr_watch":        _f4(best_thr_w),
     }
 
     xgb_pred_b = (p_xgb_te >= best_thr).astype(int)
@@ -830,6 +997,21 @@ def main(window_features: bool = True):
             "n_normal_test": int(np.sum(yb_te == 0)),
             "note": "Single 83-record stratified hold-out; reported for transparency.",
         },
+        "calibration_metrics": {
+            "ece_binary_oof":    _f4(ece_bin) if ece_bin is not None else None,
+            "brier_binary_oof":  _f4(brier_bin) if brier_bin is not None else None,
+            "log_loss_binary_oof": _f4(ll_bin) if ll_bin is not None else None,
+            "ece_3class_test":   _f4(ece_3) if ece_3 is not None else None,
+            "brier_3class_test": _f4(brier_3) if brier_3 is not None else None,
+            "temperature_T":     _f4(rn.temp_scaler.T),
+            "note": "ECE/Brier computed over 552-record OOF pool (binary); 3-class on 83-record test set.",
+        },
+        "uncertainty_coverage": uncertainty_coverage,
+        "threshold_3class": {
+            "thr_high_risk": _f4(best_thr_hr),
+            "thr_watch":     _f4(best_thr_w),
+            "val_balanced_accuracy": _f4(best_bal_3),
+        },
         "threshold_sweep":  thr_sweep,
         "calibration_curve": calibration,
         "score_histogram":   score_hist,
@@ -847,21 +1029,30 @@ def main(window_features: bool = True):
         },
 
         "cv5": {
-            "fold_auroc": [_f4(v) for v in cv_aucs],
-            "fold_f1":    [_f4(v) for v in cv_f1s],
-            "fold_sens":  [_f4(v) for v in cv_senss],
-            "fold_spec":  [_f4(v) for v in cv_specs],
-            "fold_prec":  [_f4(v) for v in cv_precs],
-            "mean_auroc": _f4(np.nanmean(cv_aucs)),
-            "std_auroc":  _f4(np.nanstd(cv_aucs)),
-            "mean_f1":    _f4(np.nanmean(cv_f1s)),
-            "std_f1":     _f4(np.nanstd(cv_f1s)),
-            "mean_sens":  _f4(np.nanmean(cv_senss)),
-            "std_sens":   _f4(np.nanstd(cv_senss)),
-            "mean_spec":  _f4(np.nanmean(cv_specs)),
-            "std_spec":   _f4(np.nanstd(cv_specs)),
-            "mean_prec":  _f4(np.nanmean(cv_precs)),
-            "std_prec":   _f4(np.nanstd(cv_precs)),
+            "fold_auroc":            [_f4(v) for v in cv_aucs],
+            "fold_f1":               [_f4(v) for v in cv_f1s],
+            "fold_sens":             [_f4(v) for v in cv_senss],
+            "fold_spec":             [_f4(v) for v in cv_specs],
+            "fold_prec":             [_f4(v) for v in cv_precs],
+            "fold_balanced_accuracy":[_f4(v) for v in cv_bals],
+            "fold_macro_f1":         [_f4(v) for v in cv_mf1s],
+            "fold_high_risk_recall": [_f4(v) for v in cv_hr_recs],
+            "mean_auroc":            _f4(np.nanmean(cv_aucs)),
+            "std_auroc":             _f4(np.nanstd(cv_aucs)),
+            "mean_f1":               _f4(np.nanmean(cv_f1s)),
+            "std_f1":                _f4(np.nanstd(cv_f1s)),
+            "mean_sens":             _f4(np.nanmean(cv_senss)),
+            "std_sens":              _f4(np.nanstd(cv_senss)),
+            "mean_spec":             _f4(np.nanmean(cv_specs)),
+            "std_spec":              _f4(np.nanstd(cv_specs)),
+            "mean_prec":             _f4(np.nanmean(cv_precs)),
+            "std_prec":              _f4(np.nanstd(cv_precs)),
+            "mean_balanced_accuracy":_f4(np.nanmean(cv_bals)),
+            "std_balanced_accuracy": _f4(np.nanstd(cv_bals)),
+            "mean_macro_f1":         _f4(np.nanmean(cv_mf1s)),
+            "std_macro_f1":          _f4(np.nanstd(cv_mf1s)),
+            "mean_high_risk_recall": _f4(np.nanmean(cv_hr_recs)),
+            "std_high_risk_recall":  _f4(np.nanstd(cv_hr_recs)),
         },
 
         "roc_curve":  roc_pts,

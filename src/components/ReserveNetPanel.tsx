@@ -29,19 +29,25 @@ const EXPERT_LABELS: Record<string, string> = {
 }
 
 export function ReserveNetPanel() {
-  const arch   = R.architecture ?? {}
-  const cv     = R.cv5 ?? {}
-  const boot   = R.bootstrap_ci ?? {}
-  const ens    = R.test_metrics ?? {}
-  const xm     = R.xgb_test_metrics ?? {}
-  const hl     = R.binary_headline ?? ens
-  const imps   = R.xgb_feature_importance ?? []
-  const etImps = R.et_feature_importance ?? []
-  const expI   = (R.expert_importances ?? {}) as Record<string, { feature: string; importance: number }[]>
-  const roc    = R.roc_curve ?? []
-  const pr     = R.pr_curve ?? []
-  const pcm    = R.per_class_metrics ?? []
-  const dist   = R.label_distribution ?? {}
+  const arch    = R.architecture ?? {}
+  const cv      = R.cv5 ?? {}
+  const boot    = R.bootstrap_ci ?? {}
+  const ens     = R.test_metrics ?? {}
+  const xm      = R.xgb_test_metrics ?? {}
+  const hl      = R.binary_headline ?? ens
+  const calib_m = R.calibration_metrics ?? {}
+  const imps    = R.xgb_feature_importance ?? []
+  const etImps  = R.et_feature_importance ?? []
+  const expI    = (R.expert_importances ?? {}) as Record<string, { feature: string; importance: number }[]>
+  const roc     = R.roc_curve ?? []
+  const pr      = R.pr_curve ?? []
+  const pcm     = R.per_class_metrics ?? []
+  const dist    = R.label_distribution ?? {}
+
+  const ECE_VAL   = (ens.ece ?? calib_m.ece_binary_oof ?? null) as number | null
+  const BRIER_VAL = (ens.brier_score ?? calib_m.brier_binary_oof ?? null) as number | null
+  const LL_VAL    = (calib_m.log_loss_binary_oof ?? null) as number | null
+  const TEMP_VAL  = (calib_m.temperature_T ?? null) as number | null
 
   const maxImpXgb = Math.max(...imps.map((i: any) => i.importance ?? 0), 0.001)
   const maxImpEt  = Math.max(...etImps.map((i: any) => i.importance ?? 0), 0.001)
@@ -147,9 +153,9 @@ export function ReserveNetPanel() {
             { label: 'High-Risk FNR',     val: ens.high_risk_recall != null ? 1 - ens.high_risk_recall : null, ci: null,                   thr: 0.20, inv: true,  desc: 'False-negative rate for high-risk: cases missed entirely (lower = safer)' },
             { label: 'Watch Recall',      val: ens.watch_recall,                                               ci: null,                   thr: 0.65, inv: false, desc: 'Watch-closely cases correctly identified — borderline cases matter too' },
             { label: 'High-Risk AUPRC',   val: AUPRC,                                                          ci: boot.auprc_binary,      thr: 0.40, inv: false, desc: 'Precision-recall AUC — more informative than AUROC for imbalanced detection' },
-            { label: 'ECE',               val: (R.ece ?? null) as number | null,                               ci: null,                   thr: 0.10, inv: true,  desc: 'Expected calibration error — lower means probabilities match observed frequencies' },
-            { label: 'Brier Score',       val: (R.brier_score ?? null) as number | null,                       ci: null,                   thr: 0.15, inv: true,  desc: 'Mean squared probability error — punishes confident wrong predictions' },
-            { label: 'Uncertainty Rate',  val: (R.uncertainty_coverage as any)?.uncertain_rate ?? null,         ci: null,                   thr: null,             desc: 'Fraction of cases the model flags as uncertain rather than committing' },
+            { label: 'ECE',               val: ECE_VAL,                                                          ci: null,                   thr: 0.10, inv: true,  desc: 'Expected calibration error — lower means probabilities match observed frequencies' },
+            { label: 'Brier Score',       val: BRIER_VAL,                                                        ci: null,                   thr: 0.15, inv: true,  desc: 'Mean squared probability error — punishes confident wrong predictions' },
+            { label: 'Uncertainty Rate',  val: (R.uncertainty_coverage as any)?.uncertain_rate ?? null,          ci: null,                   thr: null,             desc: 'Fraction of cases the model flags as uncertain rather than committing' },
           ].map(({ label, val, ci, thr, inv, desc }) => (
             <div key={label} className="rn-hl-cell">
               <div className="rn-hl-cell__label">{label}</div>
@@ -332,10 +338,10 @@ export function ReserveNetPanel() {
         </p>
         <div className="rn-hl-grid">
           {[
-            { label: 'ECE',            val: (R.ece         ?? null) as number | null, desc: 'Expected calibration error — avg gap between stated and actual confidence. Lower is better. < 0.05 is excellent; < 0.10 is good.',  inv: true,  thr: 0.10 },
-            { label: 'Brier Score',    val: (R.brier_score ?? null) as number | null, desc: 'Mean squared probability error — penalises confident wrong answers. Lower is better. Perfect = 0; baseline (always-majority) ≈ 0.15.', inv: true,  thr: 0.15 },
-            { label: 'Log-Loss',       val: (R.log_loss    ?? null) as number | null, desc: 'Negative log-likelihood — harsh penalty for high-confidence misses. Lower is better. Perfect calibration ≈ 0.',                      inv: true,  thr: 0.50 },
-            { label: 'Temperature T',  val: (R.temperature_T ?? null) as number | null, desc: 'Platt / temperature scaling factor fit on validation set. T > 1 softens overconfident probabilities.',                             inv: false, thr: null  },
+            { label: 'ECE',            val: ECE_VAL,   desc: 'Expected calibration error — avg gap between stated and actual confidence. Lower is better. < 0.05 is excellent; < 0.10 is good.',  inv: true,  thr: 0.10 },
+            { label: 'Brier Score',    val: BRIER_VAL, desc: 'Mean squared probability error — penalises confident wrong answers. Lower is better. Perfect = 0; baseline (always-majority) ≈ 0.15.', inv: true,  thr: 0.15 },
+            { label: 'Log-Loss',       val: LL_VAL,    desc: 'Negative log-likelihood — harsh penalty for high-confidence misses. Lower is better. Perfect calibration ≈ 0.',                      inv: true,  thr: 0.50 },
+            { label: 'Temperature T',  val: TEMP_VAL,  desc: 'Platt / temperature scaling factor fit on validation set. T > 1 softens overconfident probabilities.',                             inv: false, thr: null  },
           ].map(({ label, val, desc, inv, thr }) => (
             <div key={label} className="rn-hl-cell">
               <div className="rn-hl-cell__label">{label}</div>
@@ -346,10 +352,10 @@ export function ReserveNetPanel() {
             </div>
           ))}
         </div>
-        {(R.ece == null && R.brier_score == null) && (
+        {(ECE_VAL == null && BRIER_VAL == null) && (
           <div className="rn-note" style={{ marginTop: 10 }}>
             ECE, Brier score, and log-loss are computed by the Python training pipeline.
-            Run <code>python train_adaptive.py</code> to populate these values.
+            Run <code>python train_reservenet_ctu.py</code> to populate these values.
           </div>
         )}
       </section>
