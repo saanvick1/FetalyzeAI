@@ -1,0 +1,1229 @@
+For **the CTU-CHB / CTU-UHB dataset you want to use**, the best model is **not** a giant transformer, not old TOPQUA, and not a Kaggle-style tabular classifier.
+
+The best model is:
+
+# **FetalyzeAI PulseFM-ReserveNet**
+
+Meaning:
+
+```text
+PulseFM = learns the CTG waveform like a small foundation model
+ReserveNet = makes the clinical risk decision using fetal reserve logic
+```
+
+The model should be:
+
+```text
+self-supervised CTG encoder
++
+clinical CTG feature engine
++
+record-level risk model
++
+uncertainty/calibration layer
+```
+
+This gives you something unique like modern AI systems, but still mathematically correct for your small medical dataset.
+
+---
+
+# 1. What your dataset actually is
+
+Your uploaded CTU zip contains:
+
+```text
+552 .hea files
+552 .dat files
+```
+
+Each record has:
+
+```text
+FHR = fetal heart rate signal
+UC = uterine contraction signal
+sampling rate = 4 Hz
+duration ≈ 60–90 minutes
+```
+
+PhysioNet describes CTU-UHB as 552 intrapartum CTG recordings, each with fetal heart rate and uterine contraction signals sampled at 4 Hz, up to 90 minutes before delivery. ([PhysioNet][1])
+
+Mathematically, one CTG record is:
+
+```text
+Xᵢ = [FHRᵢ(t), UCᵢ(t)]
+```
+
+where:
+
+```text
+i = record number
+t = time sample
+FHRᵢ(t) = fetal heart rate at time t
+UCᵢ(t) = uterine contraction at time t
+```
+
+Since the sampling rate is 4 Hz:
+
+```text
+1 second = 4 samples
+1 minute = 240 samples
+90 minutes = 21,600 samples
+```
+
+So each full record is roughly:
+
+```text
+Xᵢ ∈ R^(2 × 21600)
+```
+
+Two channels:
+
+```text
+channel 1 = FHR
+channel 2 = UC
+```
+
+This is a **small-number-of-records, long-time-series medical dataset**.
+
+That matters a lot.
+
+You only have 552 patients/records, but each record has thousands of time points.
+
+So the danger is:
+
+> The model can easily memorize the 552 records if you use a huge architecture.
+
+That is why a giant transformer is risky.
+
+---
+
+# 2. The label problem
+
+Your label should come from real clinical outcome, mainly pH.
+
+For example:
+
+```text
+pH < 7.05        → high risk
+7.05 ≤ pH < 7.15 → watch closely
+pH ≥ 7.15        → low risk
+```
+
+From your uploaded zip, using those thresholds, the label distribution is approximately:
+
+```text
+Low risk:        447 records
+Watch closely:   65 records
+High risk:       40 records
+```
+
+So the dataset is imbalanced.
+
+That means plain accuracy is dangerous.
+
+A dumb model could predict “low risk” a lot and look okay.
+
+So your model should optimize:
+
+```text
+high-risk recall
+macro-F1
+balanced accuracy
+calibration
+false-negative rate
+```
+
+Not just accuracy.
+
+---
+
+# 3. Why normal models are not enough
+
+## Bad choice 1: plain XGBoost only
+
+XGBoost is good for extracted CTG features, but it does not see the real waveform shape directly.
+
+It sees:
+
+```text
+baseline
+variability
+deceleration count
+contraction count
+```
+
+But it may miss:
+
+```text
+how the tracing changes over time
+how FHR reacts after each contraction
+whether risk is worsening in the final 20 minutes
+```
+
+So XGBoost alone is useful but not unique enough.
+
+---
+
+## Bad choice 2: giant transformer
+
+A large transformer would take windows like:
+
+```text
+X ∈ R^(2 × 21600)
+```
+
+and try to learn everything.
+
+But the dataset has only 552 records.
+
+A huge transformer has too many parameters.
+
+If:
+
+```text
+number of model parameters >> number of records
+```
+
+then overfitting risk becomes very high.
+
+The model may learn:
+
+```text
+record-specific noise
+hospital-specific artifacts
+signal quirks
+```
+
+instead of real fetal physiology.
+
+---
+
+## Bad choice 3: diffusion model
+
+Stable Diffusion is cool, but actual diffusion generation is not the right primary model here.
+
+Why?
+
+Stable Diffusion generates images. Your task is not to generate CTG signals. Your task is to classify risk and explain concern.
+
+So do **not** build:
+
+```text
+CTG diffusion generator → risk classifier
+```
+
+That is too much.
+
+Instead, borrow the **idea** from Stable Diffusion:
+
+> Learn a compact latent representation first, then use that representation for the task.
+
+That is exactly what PulseFM should do.
+
+---
+
+# 4. The best model: PulseFM-ReserveNet
+
+The full model should look like this:
+
+```text
+Raw FHR + UC waveform
+        ↓
+PulseFM self-supervised encoder
+        ↓
+latent CTG representation
+        ↓
+ReserveNet clinical fusion model
+        ↓
+risk + uncertainty + explanation
+```
+
+More detailed:
+
+```text
+FHR + UC + missingness mask
+        ↓
+small CNN-TCN encoder
+        ↓
+128-dimensional CTG latent vector
+```
+
+```text
+clinical CTG feature engine
+        ↓
+fetal reserve score
+deceleration burden
+contraction stress response
+signal quality
+```
+
+```text
+latent vector + clinical features
+        ↓
+gated fusion head
+        ↓
+low risk / watch closely / high risk
+        ↓
+calibrated uncertainty
+```
+
+This is unique, but not overcomplicated.
+
+---
+
+# 5. Mathematical form of the model
+
+For each CTG record:
+
+```text
+Xᵢ ∈ R^(C × T)
+```
+
+where:
+
+```text
+C = 3 or 4 channels
+T = time samples
+```
+
+Use channels:
+
+```text
+x₁(t) = normalized FHR
+x₂(t) = normalized UC
+x₃(t) = missingness mask
+x₄(t) = optional signal quality channel
+```
+
+So:
+
+```text
+Xᵢ = [FHRᵢ, UCᵢ, maskᵢ, qualityᵢ]
+```
+
+Split each record into windows:
+
+```text
+Wᵢⱼ ∈ R^(C × L)
+```
+
+where:
+
+```text
+j = window number
+L = window length
+```
+
+Use:
+
+```text
+window length = 5 minutes
+sampling rate = 4 Hz
+L = 5 × 60 × 4 = 1200 samples
+```
+
+So one window is:
+
+```text
+Wᵢⱼ ∈ R^(4 × 1200)
+```
+
+This is much easier than feeding the full 90-minute trace all at once.
+
+---
+
+# 6. PulseFM encoder math
+
+PulseFM maps each CTG window to a latent vector:
+
+```text
+zᵢⱼ = fθ(Wᵢⱼ)
+```
+
+where:
+
+```text
+zᵢⱼ ∈ R^128
+```
+
+So:
+
+```text
+raw CTG window → 128-number representation
+```
+
+This is like making an “embedding” of the CTG window.
+
+Architecture:
+
+```text
+Conv1D → BatchNorm → GELU → Dropout
+Conv1D → BatchNorm → GELU
+TCN dilation 1
+TCN dilation 2
+TCN dilation 4
+TCN dilation 8
+Global average pooling
+Dense → 128
+```
+
+Why TCN?
+
+A temporal convolutional network sees time patterns at multiple scales.
+
+Dilation means:
+
+```text
+dilation 1 sees short local changes
+dilation 2 sees slightly wider changes
+dilation 4 sees longer temporal patterns
+dilation 8 sees even longer patterns
+```
+
+This is good for CTG because fetal distress patterns happen across minutes, not just one second.
+
+---
+
+# 7. Self-supervised pretraining
+
+This is the “OpenAI / Stable Diffusion style” part.
+
+Before asking the model to predict risk, make it learn CTG structure.
+
+You randomly hide part of the signal:
+
+```text
+Mᵢⱼ = binary mask
+```
+
+Corrupted input:
+
+```text
+W̃ᵢⱼ = Mᵢⱼ ⊙ Wᵢⱼ
+```
+
+where:
+
+```text
+⊙ = element-wise multiplication
+```
+
+Then the autoencoder tries to reconstruct the missing CTG:
+
+```text
+Ẇᵢⱼ = gφ(fθ(W̃ᵢⱼ))
+```
+
+Training loss:
+
+```text
+L_recon = ||(1 - Mᵢⱼ) ⊙ (Wᵢⱼ - Ẇᵢⱼ)||²
+```
+
+Meaning:
+
+> Only punish the model for the parts that were hidden.
+
+This teaches the model:
+
+```text
+normal FHR rhythm
+contraction shape
+missing signal behavior
+deceleration structure
+recovery after contraction
+```
+
+without needing labels.
+
+This matters because the labeled dataset is small.
+
+A recent CTG foundation-model-style preprint also uses self-supervised pretraining on unlabeled CTG recordings before fine-tuning on CTU-UHB, which supports this direction, though you should treat it as early research rather than clinical proof. ([arXiv][2])
+
+---
+
+# 8. Clinical feature engine math
+
+PulseFM learns from raw signals.
+
+ReserveNet also needs human-understandable clinical features.
+
+For each record or window, compute:
+
+```text
+hᵢⱼ = clinical_feature_engine(Wᵢⱼ)
+```
+
+where:
+
+```text
+hᵢⱼ ∈ R^d
+```
+
+Features include:
+
+```text
+baseline FHR
+short-term variability
+long-term variability
+accelerations
+decelerations
+contractions
+recovery time
+signal quality
+```
+
+The CTU annotation dataset is useful later because it provides expert event annotations for the 552 CTG recordings, including accelerations, decelerations, uterine contractions, and deceleration classes such as early, late, variable, and prolonged. ([ScienceDirect][3])
+
+---
+
+# 9. Deceleration Burden Index
+
+This should be one of your signature metrics.
+
+For each deceleration k:
+
+```text
+depthₖ = baseline - minimum FHR during decel
+durationₖ = decel end - decel start
+areaₖ = ∫ depthₖ(t) dt
+recoveryₖ = time needed to return to baseline
+```
+
+A simple deceleration burden score:
+
+```text
+DBI = Σₖ depthₖ × durationₖ × rₖ
+```
+
+where:
+
+```text
+rₖ = recovery penalty
+```
+
+For recovery penalty:
+
+```text
+rₖ = 1 + recovery_timeₖ / 60
+```
+
+So if recovery takes 60 seconds:
+
+```text
+rₖ = 2
+```
+
+If recovery takes 120 seconds:
+
+```text
+rₖ = 3
+```
+
+This means slow recovery increases risk.
+
+Final:
+
+```text
+DBI = Σₖ depthₖ × durationₖ × (1 + recovery_timeₖ / 60)
+```
+
+This is clinically intuitive.
+
+A short shallow deceleration gets a low score.
+
+A deep, long, repeated deceleration with slow recovery gets a high score.
+
+---
+
+# 10. Contraction Stress Response
+
+This is very important.
+
+For each contraction c:
+
+```text
+t_peak,c = time of contraction peak
+```
+
+Look after that contraction:
+
+```text
+FHR drop after contraction = baseline - min FHR in post-contraction window
+```
+
+Define:
+
+```text
+drop_c = baseline_c - min(FHR[t_peak,c : t_peak,c + Δ])
+```
+
+where:
+
+```text
+Δ = 90 seconds or 120 seconds
+```
+
+Recovery time:
+
+```text
+rec_c = first time FHR returns near baseline - time of nadir
+```
+
+Then compute:
+
+```text
+CSR = mean(drop_c × rec_c)
+```
+
+Better:
+
+```text
+CSR = mean(drop_c) + λ × mean(rec_c) + γ × trend(rec_c)
+```
+
+where:
+
+```text
+λ controls recovery penalty
+γ controls worsening-over-time penalty
+```
+
+If recovery is getting slower:
+
+```text
+trend(rec_c) > 0
+```
+
+That should increase risk.
+
+This is what makes your model more clinically intelligent than a generic classifier.
+
+---
+
+# 11. Fetal Reserve Score
+
+Make a 0–100 score.
+
+Start with 100, subtract risk penalties, add protective features.
+
+Example:
+
+```text
+FRS = 100
+      - a₁ × deceleration_burden
+      - a₂ × low_variability_penalty
+      - a₃ × delayed_recovery_penalty
+      - a₄ × poor_signal_penalty
+      - a₅ × worsening_trend_penalty
+      + b₁ × acceleration_bonus
+      + b₂ × stable_baseline_bonus
+```
+
+Then squash to 0–100:
+
+```text
+FRS = 100 × sigmoid(s)
+```
+
+where:
+
+```text
+s = weighted clinical reserve score
+```
+
+A better mathematical version:
+
+```text
+s = β₀
+    + β₁ × variability
+    + β₂ × accelerations
+    - β₃ × DBI
+    - β₄ × CSR
+    - β₅ × signal_loss
+    - β₆ × worsening_trend
+```
+
+Then:
+
+```text
+FRS = 100 / (1 + e^(-s))
+```
+
+This makes the score bounded between 0 and 100.
+
+Interpretation:
+
+```text
+FRS > 70   = strong reserve
+40–70      = borderline reserve
+FRS < 40   = low reserve
+```
+
+---
+
+# 12. Window-to-record aggregation
+
+This is one of the most important math pieces.
+
+Your labels are record-level:
+
+```text
+record i has pH outcome yᵢ
+```
+
+But your model sees many windows:
+
+```text
+Wᵢ₁, Wᵢ₂, ..., Wᵢₙ
+```
+
+So you need to combine window predictions into one record prediction.
+
+This is called **multiple instance learning**.
+
+For each window:
+
+```text
+pᵢⱼ = model probability for window j
+```
+
+Then aggregate:
+
+## Simple average
+
+```text
+pᵢ = meanⱼ(pᵢⱼ)
+```
+
+But this may dilute late dangerous events.
+
+## Max risk
+
+```text
+pᵢ,high = maxⱼ(pᵢⱼ,high)
+```
+
+Good for detecting any dangerous segment.
+
+But it can overreact to one noisy window.
+
+## Best choice: attention pooling
+
+Learn a weight for each window:
+
+```text
+αᵢⱼ = softmax(aᵀ tanh(Vzᵢⱼ))
+```
+
+Then:
+
+```text
+zᵢ = Σⱼ αᵢⱼ zᵢⱼ
+```
+
+This means:
+
+> The model learns which windows matter most.
+
+Final record prediction:
+
+```text
+pᵢ = softmax(Wzᵢ + b)
+```
+
+This is excellent for CTG because the final 10–30 minutes may matter more than early parts of the trace.
+
+---
+
+# 13. ReserveNet fusion math
+
+For each window or record, you have:
+
+```text
+zᵢ = PulseFM latent embedding
+hᵢ = clinical feature vector
+qᵢ = signal quality vector
+```
+
+Concatenate:
+
+```text
+uᵢ = [zᵢ ; hᵢ ; qᵢ]
+```
+
+Now use a gate:
+
+```text
+gᵢ = sigmoid(Wg uᵢ + bg)
+```
+
+This gate decides how much to trust each information source.
+
+For example:
+
+```text
+if signal quality is poor:
+    trust waveform less
+    trust robust clinical features more
+    increase uncertainty
+```
+
+Fusion:
+
+```text
+rᵢ = gᵢ ⊙ zᵢ + (1 - gᵢ) ⊙ Whhᵢ
+```
+
+Then classification:
+
+```text
+logitsᵢ = Wr rᵢ + br
+pᵢ = softmax(logitsᵢ)
+```
+
+This is your final risk prediction.
+
+---
+
+# 14. Loss function
+
+Use a combined loss:
+
+```text
+L_total = L_classification
+        + λ₁ L_reserve
+        + λ₂ L_uncertainty
+        + λ₃ L_reconstruction
+```
+
+But not all at once in the beginning.
+
+Use stages.
+
+---
+
+## Stage 1: pretraining loss
+
+```text
+L_pretrain = L_reconstruction
+```
+
+where:
+
+```text
+L_reconstruction = masked MSE on FHR + UC
+```
+
+---
+
+## Stage 2: supervised classification loss
+
+Use weighted cross entropy:
+
+```text
+L_CE = -Σᵢ w_yᵢ log pᵢ,yᵢ
+```
+
+Class weights should be higher for rare classes.
+
+A good formula is “effective number of samples”:
+
+```text
+w_c = (1 - β) / (1 - βⁿᶜ)
+```
+
+where:
+
+```text
+n_c = number of samples in class c
+β = 0.99 or 0.999
+```
+
+This avoids making the high-risk class weight insanely large.
+
+Since your approximate class counts are:
+
+```text
+low risk: 447
+watch: 65
+high risk: 40
+```
+
+high-risk samples need more weight.
+
+---
+
+## Stage 3: focal loss option
+
+Focal loss is useful when many examples are easy low-risk cases.
+
+```text
+L_focal = - w_y (1 - p_y)^γ log(p_y)
+```
+
+where:
+
+```text
+γ = 1.5 or 2
+```
+
+If the model already predicts a case correctly with high confidence, it gets less focus.
+
+If the model struggles, it gets more focus.
+
+This helps the model focus on difficult watch/high-risk cases.
+
+---
+
+# 15. Calibration math
+
+Medical AI must not only be accurate.
+
+It must know when it is unsure.
+
+Raw neural networks often produce overconfident probabilities.
+
+So use temperature scaling.
+
+Given logits:
+
+```text
+lᵢ
+```
+
+Calibrated probabilities:
+
+```text
+pᵢ = softmax(lᵢ / T)
+```
+
+where:
+
+```text
+T > 1 makes probabilities softer
+T < 1 makes probabilities sharper
+```
+
+Choose T on the validation set only:
+
+```text
+T* = argmin_T NLL_validation(T)
+```
+
+Never choose T on the test set.
+
+Then calculate expected calibration error:
+
+```text
+ECE = Σ_b |B_b| / n × |acc(B_b) - conf(B_b)|
+```
+
+where each bin B contains predictions with similar confidence.
+
+A good model should have:
+
+```text
+confidence ≈ actual correctness
+```
+
+Example:
+
+```text
+When model says 80% confident, it should be right about 80% of the time.
+```
+
+---
+
+# 16. Uncertainty math
+
+Use ensemble uncertainty.
+
+Train 5 small models:
+
+```text
+p₁(y|x), p₂(y|x), ..., p₅(y|x)
+```
+
+Average:
+
+```text
+p̄(y|x) = 1/K Σₖ pₖ(y|x)
+```
+
+Confidence:
+
+```text
+confidence = max_y p̄(y|x)
+```
+
+Uncertainty can be entropy:
+
+```text
+H(p̄) = -Σ_c p̄_c log p̄_c
+```
+
+High entropy means the model is unsure.
+
+Also measure disagreement:
+
+```text
+Var = 1/K Σₖ ||pₖ - p̄||²
+```
+
+If models disagree, uncertainty should rise.
+
+Final uncertainty:
+
+```text
+U = αH(p̄) + βVar
+```
+
+This is much better than a single overconfident model.
+
+---
+
+# 17. Why this model generalizes better
+
+It generalizes better because:
+
+## 1. It learns CTG structure before labels
+
+Self-supervised pretraining uses many windows.
+
+Even with only 552 records, you can create thousands of windows.
+
+But you must split by record first.
+
+Good:
+
+```text
+train records → train windows
+validation records → validation windows
+test records → test windows
+```
+
+Bad:
+
+```text
+all windows shuffled randomly
+```
+
+Random window splitting causes leakage.
+
+---
+
+## 2. It keeps the model small
+
+The encoder should be small:
+
+```text
+Conv/TCN channels: 32–64
+latent dimension: 128
+dropout: 0.15–0.30
+```
+
+Not:
+
+```text
+12-layer transformer
+768 hidden dimension
+millions of parameters
+```
+
+---
+
+## 3. It uses clinical feature constraints
+
+The model cannot rely only on black-box waveform learning.
+
+It also sees:
+
+```text
+fetal reserve
+deceleration burden
+contraction response
+signal quality
+```
+
+That makes it more stable and explainable.
+
+---
+
+## 4. It uses uncertainty
+
+If the model is unsure, it should say:
+
+```text
+Uncertain — clinician review needed
+```
+
+Not force:
+
+```text
+Normal
+```
+
+This is safer.
+
+---
+
+# 18. Exact model I would build first
+
+Start with this version:
+
+## **PulseFM-Lite + ReserveNet**
+
+```text
+Input:
+5-minute CTG windows
+FHR + UC + missingness mask
+
+Encoder:
+Small CNN-TCN
+
+Window aggregation:
+attention pooling
+
+Clinical features:
+baseline
+variability
+accelerations
+decelerations
+deceleration burden
+contraction stress response
+signal quality
+fetal reserve score
+
+Fusion:
+gated MLP
+
+Output:
+3-class risk
+uncertainty
+fetal reserve estimate
+```
+
+Architecture:
+
+```text
+Conv1D 3 → 32, kernel 9
+BatchNorm
+GELU
+Dropout 0.15
+
+Conv1D 32 → 64, kernel 7
+BatchNorm
+GELU
+
+TCN block dilation 1
+TCN block dilation 2
+TCN block dilation 4
+TCN block dilation 8
+
+Global average pooling
+Dense 64 → 128 latent
+```
+
+Then attention pooling:
+
+```text
+αᵢⱼ = softmax(aᵀ tanh(Vzᵢⱼ))
+zᵢ = Σⱼ αᵢⱼ zᵢⱼ
+```
+
+Feature fusion:
+
+```text
+uᵢ = [zᵢ ; hᵢ]
+gᵢ = sigmoid(Wg uᵢ)
+rᵢ = gᵢ ⊙ zᵢ + (1 - gᵢ) ⊙ Whhᵢ
+pᵢ = softmax(Wr rᵢ)
+```
+
+Loss:
+
+```text
+L = weighted focal loss + 0.1 × reserve regression loss
+```
+
+Calibration:
+
+```text
+temperature scaling on validation set
+```
+
+Uncertainty:
+
+```text
+5-model ensemble or MC dropout
+```
+
+---
+
+# 19. What not to do
+
+Do not build:
+
+```text
+huge transformer
+full diffusion model
+GAN-generated CTG training
+quantum-inspired layers
+Riemannian attention
+KAN everywhere
+```
+
+Those may sound impressive, but for this dataset they increase overfitting risk.
+
+Your uniqueness should come from:
+
+```text
+self-supervised CTG pretraining
+fetal reserve reasoning
+contraction-response modeling
+deceleration burden
+signal-quality uncertainty
+timeline-aware risk
+```
+
+That is scientifically better.
+
+---
+
+# 20. Final recommendation
+
+For your CTU-CHB/CTU-UHB data, the best model is:
+
+```text
+FetalyzeAI PulseFM-ReserveNet
+```
+
+With this structure:
+
+```text
+1. PulseFM self-supervised CTG encoder
+   Learns waveform structure from FHR + UC.
+
+2. Reserve clinical feature engine
+   Computes fetal reserve, deceleration burden, contraction stress response, and signal quality.
+
+3. Attention-based record aggregator
+   Combines many CTG windows into one patient-level prediction.
+
+4. Gated ReserveNet fusion head
+   Combines learned waveform embeddings with clinical features.
+
+5. Calibration + uncertainty layer
+   Reports confidence and flags uncertain cases.
+```
+
+The core idea:
+
+> **Do not make the model bigger. Make the model smarter about the structure of CTG data.**
+
+That is how you get something unique, accurate, and less likely to overfit.
+
+[1]: https://www.physionet.org/physiobank/database/ctu-uhb-ctgdb/?utm_source=chatgpt.com "CTU-CHB Intrapartum Cardiotocography Database v1.0.0"
+[2]: https://arxiv.org/abs/2601.06149?utm_source=chatgpt.com "A Foundation Model Approach for Fetal Stress Prediction During Labor From cardiotocography (CTG) recordings"
+[3]: https://www.sciencedirect.com/science/article/pii/S2352340920305849?utm_source=chatgpt.com "Annotation dataset of the cardiotocographic recordings ..."

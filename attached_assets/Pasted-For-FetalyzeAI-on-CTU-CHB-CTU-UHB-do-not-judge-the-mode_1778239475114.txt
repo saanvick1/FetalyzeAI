@@ -1,0 +1,565 @@
+For FetalyzeAI on **CTU-CHB / CTU-UHB**, do **not** judge the model mainly by accuracy. You need metrics that show whether the model catches dangerous cases, stays calibrated, and avoids overconfident mistakes.
+
+## Must-have evaluation metrics
+
+### 1. Accuracy
+
+Basic overall correctness.
+
+```text
+accuracy = correct predictions / total predictions
+```
+
+Use it, but do not make it your main claim.
+
+---
+
+### 2. Balanced accuracy
+
+Very important because your classes are imbalanced.
+
+```text
+balanced accuracy = average recall across all classes
+```
+
+This prevents the model from looking good just because it predicts “low risk” often.
+
+---
+
+### 3. Macro-F1
+
+One of your most important metrics.
+
+```text
+macro-F1 = average F1 across low risk, watch closely, high risk
+```
+
+This treats all classes equally, including the smaller high-risk class.
+
+---
+
+### 4. Weighted F1
+
+Useful secondary metric.
+
+```text
+weighted F1 = F1 weighted by class size
+```
+
+This shows overall performance while respecting class distribution.
+
+---
+
+### 5. High-risk recall / sensitivity
+
+This is probably the **most important clinical metric**.
+
+```text
+high-risk recall = high-risk cases correctly found / all true high-risk cases
+```
+
+For FetalyzeAI, missing a high-risk case is worse than creating an extra warning.
+
+Track this clearly:
+
+```text
+High-risk recall
+High-risk false-negative count
+High-risk false-negative rate
+```
+
+---
+
+### 6. Watch-closely recall
+
+Also important because borderline fetal cases matter.
+
+```text
+watch recall = watch cases correctly found / all true watch cases
+```
+
+The “watch closely” class may be where FetalyzeAI is most useful.
+
+---
+
+### 7. Specificity
+
+Shows how well the model avoids false alarms.
+
+For high-risk detection:
+
+```text
+specificity = true low/watch cases correctly not called high-risk
+```
+
+You want high sensitivity, but specificity still matters so the tool does not alarm too often.
+
+---
+
+### 8. AUROC
+
+Use AUROC for:
+
+```text
+low vs rest
+watch vs rest
+high-risk vs rest
+macro-average AUROC
+```
+
+AUROC tells you ranking ability, but it can look too optimistic when classes are imbalanced.
+
+---
+
+### 9. AUPRC
+
+Very important for high-risk cases.
+
+```text
+AUPRC = area under precision-recall curve
+```
+
+For imbalanced medical data, **high-risk AUPRC** is often more meaningful than AUROC.
+
+Report:
+
+```text
+High-risk AUPRC
+Macro AUPRC
+```
+
+---
+
+### 10. Confusion matrix
+
+Absolutely needed.
+
+Use labels:
+
+```text
+Low Risk
+Watch Closely
+High Risk
+```
+
+This lets you see:
+
+```text
+high-risk predicted as low risk
+watch predicted as low risk
+low risk predicted as high risk
+```
+
+The worst cell is:
+
+```text
+true high-risk → predicted low-risk
+```
+
+That is the dangerous miss.
+
+---
+
+## Calibration and uncertainty metrics
+
+These are extremely important for a clinical-style AI tool.
+
+### 11. Brier score
+
+Measures probability quality.
+
+```text
+lower Brier score = better calibrated probabilities
+```
+
+A model saying 95% confidence and being wrong should be punished.
+
+---
+
+### 12. Expected Calibration Error, ECE
+
+Shows whether confidence matches reality.
+
+Example:
+
+```text
+When the model says 80% confident, is it actually right about 80% of the time?
+```
+
+Report:
+
+```text
+ECE
+calibration curve
+reliability diagram
+```
+
+---
+
+### 13. Negative log loss
+
+Good for probability quality.
+
+```text
+log loss punishes confident wrong predictions
+```
+
+This is useful when comparing calibrated models.
+
+---
+
+### 14. Uncertainty coverage
+
+Since FetalyzeAI should flag uncertain cases, measure:
+
+```text
+What percent of cases are marked uncertain?
+How accurate is the model on confident cases?
+How many high-risk misses are caught by the uncertainty flag?
+```
+
+Track:
+
+```text
+uncertain rate
+accuracy on confident cases
+high-risk recall on confident cases
+high-risk cases flagged as uncertain
+```
+
+This is very important for your app.
+
+---
+
+### 15. Selective prediction curve
+
+This is advanced but very good.
+
+Ask:
+
+```text
+If the model only makes predictions when confidence is high, how accurate is it?
+```
+
+Show:
+
+```text
+coverage vs accuracy
+coverage vs high-risk recall
+```
+
+Example:
+
+```text
+At 80% coverage, model accuracy = X
+At 60% coverage, model accuracy = Y
+```
+
+This proves uncertainty is useful.
+
+---
+
+## CTG-specific metrics
+
+These make FetalyzeAI look unique.
+
+### 16. Fetal Reserve Score correlation
+
+If your model outputs fetal reserve score, test whether it correlates with clinical outcomes.
+
+Compare fetal reserve score against:
+
+```text
+pH
+base deficit
+Apgar5
+risk label
+```
+
+Metrics:
+
+```text
+Spearman correlation
+Pearson correlation
+AUC for low reserve detecting high-risk outcome
+```
+
+---
+
+### 17. Deceleration Burden Index validation
+
+Test whether higher deceleration burden is associated with worse outcomes.
+
+Report:
+
+```text
+mean DBI by class
+DBI correlation with pH
+DBI AUC for high-risk prediction
+```
+
+Example:
+
+```text
+Low Risk DBI: low
+Watch Closely DBI: medium
+High Risk DBI: high
+```
+
+This validates your custom feature.
+
+---
+
+### 18. Contraction Stress Response validation
+
+Measure whether delayed recovery after contractions relates to worse outcomes.
+
+Report:
+
+```text
+average recovery time by class
+late-response score by class
+correlation with pH
+AUC for high-risk detection
+```
+
+This supports your unique clinical idea.
+
+---
+
+### 19. Signal quality subgroup performance
+
+Split test cases by signal quality:
+
+```text
+good signal
+acceptable signal
+poor signal
+```
+
+Report performance for each group.
+
+This tells you whether the model fails when data is noisy.
+
+Metrics:
+
+```text
+accuracy by signal quality
+high-risk recall by signal quality
+uncertainty rate by signal quality
+```
+
+A good model should become more uncertain when signal quality is poor.
+
+---
+
+### 20. Timeline deterioration metrics
+
+If you use 5-minute windows, evaluate whether risk increases near delivery.
+
+Track:
+
+```text
+final 30-minute risk score
+final 10-minute risk score
+risk slope over time
+maximum risk window
+```
+
+Compare those to pH/outcome.
+
+Metrics:
+
+```text
+AUC of final-window risk
+AUC of max-window risk
+correlation between risk slope and pH
+```
+
+This makes FetalyzeAI different from a static classifier.
+
+---
+
+## Validation design metrics
+
+### 21. Record-level split performance
+
+Always report:
+
+```text
+record-level train/validation/test split
+```
+
+Not random window split.
+
+In app stats, show:
+
+```text
+Train records:
+Validation records:
+Test records:
+Windows used:
+No record leakage: yes
+```
+
+---
+
+### 22. Cross-validation mean ± std
+
+Use 5-fold grouped cross-validation.
+
+Report:
+
+```text
+balanced accuracy: mean ± std
+macro-F1: mean ± std
+high-risk recall: mean ± std
+ECE: mean ± std
+```
+
+This shows stability.
+
+---
+
+### 23. Bootstrap confidence intervals
+
+For your final test set, report 95% confidence intervals.
+
+Example:
+
+```text
+High-risk recall: 0.82 [0.68, 0.94]
+Macro-F1: 0.71 [0.63, 0.79]
+Balanced accuracy: 0.76 [0.69, 0.83]
+```
+
+This is much better than single numbers.
+
+---
+
+## Error analysis metrics
+
+### 24. False-negative analysis
+
+Create a table of all dangerous misses.
+
+For every true high-risk case predicted low/watch, show:
+
+```text
+record_id
+true label
+predicted label
+confidence
+uncertainty
+pH
+fetal reserve score
+deceleration burden
+signal quality
+```
+
+This is critical for clinical trust.
+
+---
+
+### 25. False-alarm analysis
+
+For low-risk cases predicted high-risk, show:
+
+```text
+record_id
+confidence
+uncertainty
+deceleration burden
+signal quality
+reason for false alarm
+```
+
+This helps reduce alert fatigue.
+
+---
+
+## Best metrics to show in app.py
+
+In your app, show these first:
+
+```text
+Balanced Accuracy
+Macro-F1
+High-Risk Recall
+High-Risk False-Negative Rate
+AUPRC for High Risk
+ECE
+Brier Score
+Uncertainty Coverage
+```
+
+Then show:
+
+```text
+Accuracy
+Weighted F1
+AUROC
+Confusion Matrix
+Bootstrap Confidence Intervals
+```
+
+---
+
+## Best dashboard layout
+
+### Top cards
+
+```text
+Balanced Accuracy
+Macro-F1
+High-Risk Recall
+High-Risk FNR
+ECE
+Uncertainty Coverage
+```
+
+### Charts
+
+```text
+Confusion Matrix
+Calibration Curve
+Precision-Recall Curve for High Risk
+ROC Curve
+Coverage vs Accuracy Curve
+Feature Importance
+```
+
+### CTG-specific validation
+
+```text
+Fetal Reserve vs pH
+Deceleration Burden by Risk Class
+Contraction Recovery by Risk Class
+Signal Quality Subgroup Performance
+```
+
+---
+
+## Minimum metric set
+
+If you only want the essential set, use this:
+
+```text
+1. Accuracy
+2. Balanced accuracy
+3. Macro-F1
+4. High-risk recall
+5. High-risk false-negative rate
+6. Watch-closely recall
+7. Specificity
+8. AUROC
+9. High-risk AUPRC
+10. Confusion matrix
+11. Brier score
+12. Expected calibration error
+13. Uncertainty coverage
+14. Bootstrap confidence intervals
+15. False-negative case table
+```
+
+That is the best evaluation package for FetalyzeAI.

@@ -138,18 +138,18 @@ def detect_decelerations(fhr: np.ndarray, baseline: float, fs: int = FS,
     if np.isnan(baseline):
         return dict(n_decels=0, mean_decel_depth=0.0, mean_decel_dur_s=0.0,
                     total_decel_dur_s=0.0, decel_area=0.0, prolonged_flag=0,
-                    max_decel_depth=0.0, decel_runs=[])
+                    max_decel_depth=0.0, decel_runs=[], decel_recoveries=[])
     fhr_i = np.where(np.isnan(fhr), baseline, fhr)
     below = fhr_i < (baseline - delta)
     runs  = _detect_runs(below)
-    depths, durs, areas = [], [], []
-    prolonged = 0
+    depths, durs, areas, recoveries = [], [], [], []
+    prolonged  = 0
     decel_runs = []
     for s, e in runs:
         d = (e - s) / fs
         if d < min_dur_s:
             continue
-        seg = fhr_i[s:e]
+        seg   = fhr_i[s:e]
         depth = float(baseline - seg.min())
         area  = float(np.sum(np.maximum(baseline - seg, 0)) / fs)
         depths.append(depth)
@@ -157,16 +157,24 @@ def detect_decelerations(fhr: np.ndarray, baseline: float, fs: int = FS,
         areas.append(area)
         if d >= 120:
             prolonged = 1
-        decel_runs.append((s, e, depth, d))
+        # Per-decel recovery time: seconds until FHR returns within 5 bpm of baseline
+        post_end = min(e + int(120 * fs), len(fhr_i))
+        post     = fhr_i[e:post_end]
+        rec_idx  = np.where(post >= (baseline - 5))[0]
+        rec_s    = float(rec_idx[0] / fs) if len(rec_idx) else float(len(post) / fs)
+        recoveries.append(rec_s)
+        decel_runs.append((s, e, depth, d, rec_s))
     return dict(
-        n_decels         = len(depths),
-        mean_decel_depth = float(np.mean(depths)) if depths else 0.0,
-        max_decel_depth  = float(np.max(depths))  if depths else 0.0,
-        mean_decel_dur_s = float(np.mean(durs))   if durs   else 0.0,
-        total_decel_dur_s= float(np.sum(durs))    if durs   else 0.0,
-        decel_area       = float(np.sum(areas))   if areas  else 0.0,
-        prolonged_flag   = int(prolonged),
-        decel_runs       = decel_runs,
+        n_decels          = len(depths),
+        mean_decel_depth  = float(np.mean(depths))      if depths     else 0.0,
+        max_decel_depth   = float(np.max(depths))        if depths     else 0.0,
+        mean_decel_dur_s  = float(np.mean(durs))         if durs       else 0.0,
+        total_decel_dur_s = float(np.sum(durs))          if durs       else 0.0,
+        decel_area        = float(np.sum(areas))         if areas      else 0.0,
+        mean_decel_recovery_s = float(np.mean(recoveries)) if recoveries else 0.0,
+        prolonged_flag    = int(prolonged),
+        decel_runs        = decel_runs,
+        decel_recoveries  = recoveries,
     )
 
 
@@ -205,50 +213,74 @@ def detect_contractions(uc: np.ndarray, fs: int = FS,
 # ────────────────────────────────────────────────────────────────────────────
 
 def compute_contraction_stress_response(fhr: np.ndarray, uc: np.ndarray,
-                                        baseline: float, fs: int = FS) -> dict:
+                                        baseline: float, fs: int = FS,
+                                        lam: float = 0.50,
+                                        gamma: float = 0.30) -> dict:
+    """
+    Contraction Stress Response (spec §10):
+        drop_c  = baseline - min(FHR[t_peak : t_peak + Δ])
+        rec_c   = time for FHR to return near baseline after nadir
+        CSR     = mean(drop_c) + λ × mean(rec_c) + γ × trend(rec_c)
+
+    λ = 0.50 penalises slow recovery; γ = 0.30 penalises worsening over time.
+    trend(rec_c) > 0 means recovery is getting slower → higher risk.
+    """
+    _empty = dict(mean_fhr_drop=0.0, mean_recovery_time_s=0.0,
+                  delayed_recovery_score=0.0, late_decel_likelihood=0.0,
+                  worsening_recovery_trend=0.0, csr_score=0.0)
     if np.isnan(baseline):
-        return dict(mean_fhr_drop=0.0, mean_recovery_time_s=0.0,
-                    delayed_recovery_score=0.0, late_decel_likelihood=0.0,
-                    worsening_recovery_trend=0.0)
+        return _empty
     contractions = detect_contractions(uc, fs)
     runs = contractions["uc_runs"]
     if not runs:
-        return dict(mean_fhr_drop=0.0, mean_recovery_time_s=0.0,
-                    delayed_recovery_score=0.0, late_decel_likelihood=0.0,
-                    worsening_recovery_trend=0.0)
+        return _empty
 
     fhr_i = np.where(np.isnan(fhr), baseline, fhr)
     drops, recoveries, late_decel = [], [], 0
+    delta = int(90 * fs)   # 90-second post-contraction window (spec §10)
     for s, e in runs:
-        post_end = min(e + int(60 * fs), len(fhr_i))
+        post_end = min(e + delta, len(fhr_i))
         post = fhr_i[e:post_end]
         if len(post) < fs * 5:
             continue
-        drop = baseline - post.min()
+        drop = float(baseline - post.min())
         drops.append(max(drop, 0.0))
-        # Recovery time = seconds until FHR returns within 5 bpm of baseline
+        # Recovery: first time FHR returns within 5 bpm of baseline
         rec_idx = np.where(post >= (baseline - 5))[0]
-        recoveries.append(float(rec_idx[0] / fs) if len(rec_idx) else (len(post) / fs))
-        # Late deceleration: nadir more than 30s after contraction peak
+        recoveries.append(float(rec_idx[0] / fs) if len(rec_idx) else float(len(post) / fs))
+        # Late deceleration flag: nadir ≥ 30 s after contraction end
         if drop > 15:
-            nadir = int(np.argmin(post))
-            if nadir / fs >= 30:
+            nadir_t = int(np.argmin(post))
+            if nadir_t / fs >= 30:
                 late_decel += 1
 
     if not drops:
-        return dict(mean_fhr_drop=0.0, mean_recovery_time_s=0.0,
-                    delayed_recovery_score=0.0, late_decel_likelihood=0.0,
-                    worsening_recovery_trend=0.0)
+        return _empty
 
-    half = len(recoveries) // 2 or 1
-    early_rec = float(np.mean(recoveries[:half]))
-    late_rec  = float(np.mean(recoveries[half:]))
+    mean_drop = float(np.mean(drops))
+    mean_rec  = float(np.mean(recoveries))
+
+    # trend(rec_c) = slope of recovery times over the recording
+    if len(recoveries) >= 3:
+        t_idx  = np.arange(len(recoveries), dtype=float)
+        try:
+            trend_rec = float(np.polyfit(t_idx, recoveries, 1)[0])
+        except Exception:
+            trend_rec = 0.0
+    else:
+        half = len(recoveries) // 2 or 1
+        trend_rec = float(np.mean(recoveries[half:])) - float(np.mean(recoveries[:half]))
+
+    # CSR formula (spec §10)
+    csr_score = mean_drop + lam * mean_rec + gamma * max(trend_rec, 0.0)
+
     return dict(
-        mean_fhr_drop            = float(np.mean(drops)),
-        mean_recovery_time_s     = float(np.mean(recoveries)),
+        mean_fhr_drop            = mean_drop,
+        mean_recovery_time_s     = mean_rec,
         delayed_recovery_score   = float(np.mean([r > 30 for r in recoveries])),
         late_decel_likelihood    = float(late_decel / len(runs)),
-        worsening_recovery_trend = float(late_rec - early_rec),
+        worsening_recovery_trend = trend_rec,
+        csr_score                = float(csr_score),
     )
 
 
@@ -258,12 +290,33 @@ def compute_contraction_stress_response(fhr: np.ndarray, uc: np.ndarray,
 
 def compute_deceleration_burden_index(decel_features: dict,
                                       delayed_recovery_score: float = 0.0) -> float:
-    depth      = decel_features.get("mean_decel_depth", 0.0)
-    duration   = decel_features.get("mean_decel_dur_s", 0.0)
-    recurrence = decel_features.get("n_decels", 0)
-    delayed    = max(delayed_recovery_score, 0.05)
-    burden     = depth * duration * recurrence * delayed
-    return float(np.log1p(burden))
+    """
+    Deceleration Burden Index (spec §9):
+        DBI = Σₖ depthₖ × durationₖ × (1 + recovery_timeₖ / 60)
+
+    Uses per-deceleration recovery times when available (decel_runs contains
+    5-tuples: start, end, depth, duration_s, recovery_s).
+    Falls back to mean-based approximation for backward compatibility.
+    """
+    runs = decel_features.get("decel_runs", [])
+    dbi  = 0.0
+    if runs:
+        for entry in runs:
+            if len(entry) >= 5:
+                _s, _e, depth_k, dur_k, rec_k = entry[:5]
+            else:
+                _s, _e, depth_k, dur_k = entry[:4]
+                rec_k = decel_features.get("mean_decel_recovery_s", 0.0)
+            dbi += float(depth_k) * float(dur_k) * (1.0 + float(rec_k) / 60.0)
+    else:
+        # Fallback: approximate from aggregated stats
+        depth   = decel_features.get("mean_decel_depth", 0.0)
+        dur     = decel_features.get("mean_decel_dur_s", 0.0)
+        n       = decel_features.get("n_decels", 0)
+        rec_s   = decel_features.get("mean_decel_recovery_s",
+                  max(delayed_recovery_score * 60.0, 0.0))
+        dbi = float(depth) * float(dur) * (1.0 + rec_s / 60.0) * float(n)
+    return float(np.log1p(dbi))
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -271,29 +324,63 @@ def compute_deceleration_burden_index(decel_features: dict,
 # ────────────────────────────────────────────────────────────────────────────
 
 def compute_fetal_reserve_score(features: dict) -> float:
-    score = 50.0
-    bl  = features.get("baseline_fhr",  np.nan)
-    stv = features.get("stv",           np.nan)
-    ltv = features.get("ltv",           np.nan)
-    n_acc = features.get("n_accels", 0)
-    n_dec = features.get("n_decels", 0)
-    burden  = features.get("decel_burden_idx", 0.0)
-    delayed = features.get("delayed_recovery_score", 0.0)
-    sq      = features.get("signal_quality", 0.5)
-    dur_min = max(features.get("duration_min", 1.0), 1.0)
+    """
+    Fetal Reserve Score (spec §11):
+        s = β₀
+            + β₁ × variability
+            + β₂ × accelerations
+            - β₃ × DBI
+            - β₄ × CSR
+            - β₅ × signal_loss
+            - β₆ × worsening_trend
+        FRS = 100 / (1 + e^(-s))
 
-    if not np.isnan(bl):
-        score += 15 if 110 <= bl <= 160 else (5 if 100 <= bl < 110 or 160 < bl <= 170 else -10)
+    Interpretation:
+        FRS > 70  — strong reserve
+        40–70     — borderline
+        FRS < 40  — low reserve
+    """
+    stv     = features.get("stv",                    np.nan)
+    ltv     = features.get("ltv",                    np.nan)
+    n_acc   = features.get("n_accels",               0.0)
+    burden  = features.get("decel_burden_idx",       0.0)
+    csr     = features.get("csr_score",              0.0)
+    sq      = features.get("signal_quality",         1.0)
+    trend   = features.get("worsening_recovery_trend", 0.0)
+    dur_min = max(features.get("duration_min",       1.0), 1.0)
+
+    # β₀ — neutral baseline: maps to FRS ≈ 50 with no features
+    s = 0.0
+
+    # β₁ — variability (normal STV 5–25 bpm, normal LTV 10–40 bpm)
     if not np.isnan(stv):
-        score += 15 if 5 <= stv <= 25 else (5 if 3 <= stv < 5 else -10)
+        if   5.0 <= stv <= 25.0: s += 0.8
+        elif 3.0 <= stv <  5.0:  s += 0.1
+        else:                     s -= 0.6
     if not np.isnan(ltv):
-        score += 10 if 10 <= ltv <= 40 else (5 if 5 <= ltv < 10 else -5)
-    acc_rate = n_acc / (dur_min / 30)
-    score += 15 if acc_rate >= 2 else (8 if acc_rate >= 1 else -5)
-    score -= min(25, burden * 3 + n_dec * 1.5)
-    score -= min(15, delayed * 15)
-    score *= max(sq, 0.3)
-    return float(np.clip(score, 0, 100))
+        if   10.0 <= ltv <= 40.0: s += 0.4
+        elif  5.0 <= ltv < 10.0:  s += 0.1
+        else:                      s -= 0.3
+
+    # β₂ — accelerations (≥2 per 30 min is reassuring)
+    acc_per30 = float(n_acc) / (dur_min / 30.0)
+    s += 0.6 if acc_per30 >= 2 else (0.2 if acc_per30 >= 1 else -0.3)
+
+    # β₃ — deceleration burden (log-scaled, higher = more risk)
+    s -= 0.50 * float(burden)
+
+    # β₄ — contraction stress response (higher = more risk)
+    s -= 0.03 * float(max(csr, 0.0))
+
+    # β₅ — signal loss penalty
+    s -= 0.8 * (1.0 - float(max(sq, 0.0)))
+
+    # β₆ — worsening recovery trend (positive trend = getting worse)
+    s -= 0.02 * float(max(trend, 0.0))
+
+    # FRS = 100 × sigmoid(s)
+    frs = 100.0 / (1.0 + np.exp(-s))
+    return float(np.clip(frs, 0.0, 100.0))
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -353,42 +440,44 @@ def extract_record_features(record, light: bool = False) -> dict:
     burden_idx = compute_deceleration_burden_index(dec_f, csr_f["delayed_recovery_score"])
 
     pre = dict(
-        baseline_fhr           = baseline,
-        mean_fhr               = mean_fhr,
-        std_fhr                = var_f["std_fhr"],
-        stv                    = var_f["stv"],
-        ltv                    = var_f["ltv"],
-        stv_norm               = var_f["stv"] / 10.0 if var_f["stv"] is not None and not np.isnan(var_f["stv"]) else np.nan,
-        ltv_norm               = var_f["ltv"] / 25.0 if var_f["ltv"] is not None and not np.isnan(var_f["ltv"]) else np.nan,
-        roughness              = var_f["roughness"],
-        tachycardia_frac       = tach,
-        bradycardia_frac       = brad,
-        n_accels               = float(acc_f["n_accels"]),
-        accels_per_30min       = acc_f["n_accels"] / dur_30,
-        mean_accel_height      = acc_f["mean_accel_height"],
-        n_decels               = float(dec_f["n_decels"]),
-        decels_per_30min       = dec_f["n_decels"] / dur_30,
-        mean_decel_depth       = dec_f["mean_decel_depth"],
-        max_decel_depth        = dec_f["max_decel_depth"],
-        mean_decel_dur_s       = dec_f["mean_decel_dur_s"],
-        total_decel_dur_s      = dec_f["total_decel_dur_s"],
-        decel_area             = dec_f["decel_area"],
-        prolonged_decel_flag   = float(dec_f["prolonged_flag"]),
-        n_contractions         = float(con_f["n_contractions"]),
-        mean_contraction_dur_s = con_f["mean_contraction_dur_s"],
+        baseline_fhr               = baseline,
+        mean_fhr                   = mean_fhr,
+        std_fhr                    = var_f["std_fhr"],
+        stv                        = var_f["stv"],
+        ltv                        = var_f["ltv"],
+        stv_norm                   = var_f["stv"] / 10.0 if var_f["stv"] is not None and not np.isnan(var_f["stv"]) else np.nan,
+        ltv_norm                   = var_f["ltv"] / 25.0 if var_f["ltv"] is not None and not np.isnan(var_f["ltv"]) else np.nan,
+        roughness                  = var_f["roughness"],
+        tachycardia_frac           = tach,
+        bradycardia_frac           = brad,
+        n_accels                   = float(acc_f["n_accels"]),
+        accels_per_30min           = acc_f["n_accels"] / dur_30,
+        mean_accel_height          = acc_f["mean_accel_height"],
+        n_decels                   = float(dec_f["n_decels"]),
+        decels_per_30min           = dec_f["n_decels"] / dur_30,
+        mean_decel_depth           = dec_f["mean_decel_depth"],
+        max_decel_depth            = dec_f["max_decel_depth"],
+        mean_decel_dur_s           = dec_f["mean_decel_dur_s"],
+        total_decel_dur_s          = dec_f["total_decel_dur_s"],
+        decel_area                 = dec_f["decel_area"],
+        mean_decel_recovery_s      = dec_f.get("mean_decel_recovery_s", 0.0),
+        prolonged_decel_flag       = float(dec_f["prolonged_flag"]),
+        n_contractions             = float(con_f["n_contractions"]),
+        mean_contraction_dur_s     = con_f["mean_contraction_dur_s"],
         mean_contraction_intensity = con_f["mean_contraction_intensity"],
-        contractions_per_10min = con_f["contractions_per_10min"],
-        mean_fhr_drop_post_uc  = csr_f["mean_fhr_drop"],
-        mean_recovery_time_s   = csr_f["mean_recovery_time_s"],
-        delayed_recovery_score = csr_f["delayed_recovery_score"],
-        late_decel_likelihood  = csr_f["late_decel_likelihood"],
-        worsening_recovery_trend = csr_f["worsening_recovery_trend"],
-        decel_burden_idx       = burden_idx,
-        missing_fhr_pct        = sq_f["missing_pct"],
-        flatline_pct           = sq_f["flatline_pct"],
-        abrupt_jump_count      = float(sq_f["abrupt_jump_count"]),
-        signal_quality         = sq_f["signal_quality"],
-        duration_min           = dur_min,
+        contractions_per_10min     = con_f["contractions_per_10min"],
+        mean_fhr_drop_post_uc      = csr_f["mean_fhr_drop"],
+        mean_recovery_time_s       = csr_f["mean_recovery_time_s"],
+        delayed_recovery_score     = csr_f["delayed_recovery_score"],
+        late_decel_likelihood      = csr_f["late_decel_likelihood"],
+        worsening_recovery_trend   = csr_f["worsening_recovery_trend"],
+        csr_score                  = csr_f.get("csr_score", 0.0),
+        decel_burden_idx           = burden_idx,
+        missing_fhr_pct            = sq_f["missing_pct"],
+        flatline_pct               = sq_f["flatline_pct"],
+        abrupt_jump_count          = float(sq_f["abrupt_jump_count"]),
+        signal_quality             = sq_f["signal_quality"],
+        duration_min               = dur_min,
     )
     pre["fetal_reserve_score"] = compute_fetal_reserve_score(pre)
 

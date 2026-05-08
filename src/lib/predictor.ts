@@ -1,17 +1,22 @@
 /**
- * FetalyzeAI AdaptiveReserveNet v3.0 — Clinical Inference Engine (TypeScript)
+ * FetalyzeAI PulseFM-ReserveNet — Clinical Inference Engine (TypeScript)
  *
- * Mirrors the Python AdaptiveReserveNet v3.0 architecture:
+ * Mirrors the Python PulseFM-ReserveNet architecture:
  *
  *   Expert A  — FHR Baseline      (baseline_fhr, std_fhr, tachycardia/bradycardia)
  *   Expert B  — Variability+Spec  (stv, ltv, stv_norm, spectral features)
  *   Expert C  — Event Patterns    (decels, accels, contractions, late-decel)
- *   Expert D  — Temporal Trends   (last-30-min vs full recording deltas)  ← NEW v3
+ *   Expert D  — Temporal Trends   (last-30-min vs full recording deltas)
  *
- *   AttentionGating  — softmax-normalised per-expert weights (not max-conf heuristic)
- *   Meta Fusion      — weighted logit sum + global clinical override signals
- *   TemperatureScaler— T = 0.72 (calibrated on CTU-CHB validation set)
- *   Conformal Unc    — prediction-set-size + entropy combined uncertainty  ← NEW v3
+ *   AttentionGating    — softmax-normalised per-expert weights (sharpened β=2.0)
+ *   GatedReserveFusion — g ⊙ z + (1-g) ⊙ Wh·h
+ *   TemperatureScaler  — T = 0.72 (calibrated on CTU-CHB validation set)
+ *   Uncertainty        — 0.6 × H(p̄)_norm + 0.4 × Var_norm  (ensemble approx.)
+ *
+ * Clinical formulas (spec §9–11):
+ *   DBI = Σₖ depthₖ × durationₖ × (1 + recovery_timeₖ / 60)
+ *   CSR = mean(drop_c) + 0.5 × mean(rec_c) + 0.3 × trend(rec_c)
+ *   FRS = 100 / (1 + e^(-s))   where s is weighted clinical reserve score
  */
 
 import type { FeatureValues } from './features'
@@ -226,39 +231,67 @@ function attentionWeights(
   return gated.map(g => g / total) as [number, number, number, number]
 }
 
-// ── Deceleration burden index ─────────────────────────────────────────────────
+// ── Deceleration Burden Index (spec §9) ───────────────────────────────────────
+// DBI = Σₖ depthₖ × durationₖ × (1 + recovery_timeₖ / 60)
+// Frontend approximation: uses per-record mean stats (exact per-decel is Python-only)
 function decelBurdenIdx(f: FeatureValues): number {
-  const burden = f.mean_decel_depth * (f.mean_decel_dur_s || 30) *
-                 f.n_decels * Math.max(f.delayed_recovery_score, 0.05)
-  return Math.log1p(burden)
+  const ext = f as FeatureValues & { mean_decel_recovery_s?: number }
+  const recS  = ext.mean_decel_recovery_s ?? (f.delayed_recovery_score * 60)
+  const dbi   = f.n_decels * f.mean_decel_depth *
+                (f.mean_decel_dur_s || 30) * (1 + recS / 60)
+  return Math.log1p(dbi)
 }
 
-// ── Fetal Reserve Score (0–100) ───────────────────────────────────────────────
-function computeFRS(f: FeatureValues, probs: number[]): number {
-  let frs = 50.0
-  const bl = f.baseline_fhr
-  if (bl >= 110 && bl <= 160) frs += 15
-  else if (bl < 100 || bl > 170) frs -= 12
+// ── Contraction Stress Response (spec §10) ────────────────────────────────────
+// CSR = mean(drop_c) + 0.5 × mean(rec_c) + 0.3 × trend(rec_c)
+function csrScore(f: FeatureValues): number {
+  const ext = f as FeatureValues & {
+    mean_fhr_drop_post_uc?: number
+    mean_recovery_time_s?:  number
+    worsening_recovery_trend?: number
+    csr_score?: number
+  }
+  if (ext.csr_score !== undefined) return ext.csr_score
+  const drop  = ext.mean_fhr_drop_post_uc ?? 0
+  const recT  = ext.mean_recovery_time_s  ?? 0
+  const trend = Math.max(ext.worsening_recovery_trend ?? 0, 0)
+  return drop + 0.5 * recT + 0.3 * trend
+}
 
-  const stv = f.stv
-  if (stv >= 1.0 && stv <= 4.0) frs += 15
-  else if (stv >= 0.5) frs += 5
-  else frs -= 20
+// ── Fetal Reserve Score (spec §11) ────────────────────────────────────────────
+// s = β₀ + β₁×variability + β₂×accelerations − β₃×DBI − β₄×CSR − β₅×signal_loss − β₆×trend
+// FRS = 100 / (1 + e^(−s))
+function computeFRS(f: FeatureValues, _probs: number[]): number {
+  const stv     = f.stv
+  const ltv     = f.ltv
+  const sq      = Math.max(f.signal_quality, 0)
+  const ext     = f as FeatureValues & { worsening_recovery_trend?: number }
+  const trend   = Math.max(ext.worsening_recovery_trend ?? 0, 0)
+  const dbi     = decelBurdenIdx(f)
+  const csr     = csrScore(f)
+  const acc30   = f.accels_per_30min
 
-  const ltv = f.ltv
-  if (ltv >= 5 && ltv <= 25) frs += 10
-  else if (ltv < 3) frs -= 10
+  let s = 0.0
+  // β₁ — variability
+  if      (stv >= 5.0 && stv <= 25.0) s += 0.8
+  else if (stv >= 3.0)                 s += 0.1
+  else                                 s -= 0.6
+  if      (ltv >= 10.0 && ltv <= 40.0) s += 0.4
+  else if (ltv >= 5.0)                  s += 0.1
+  else                                  s -= 0.3
+  // β₂ — accelerations
+  s += acc30 >= 2 ? 0.6 : acc30 >= 1 ? 0.2 : -0.3
+  // β₃ — deceleration burden
+  s -= 0.50 * dbi
+  // β₄ — contraction stress
+  s -= 0.03 * Math.max(csr, 0)
+  // β₅ — signal quality loss
+  s -= 0.8 * (1.0 - sq)
+  // β₆ — worsening recovery trend
+  s -= 0.02 * trend
 
-  frs += Math.min(15, f.accels_per_30min * 3)
-  frs -= Math.min(25, decelBurdenIdx(f) * 3)
-  frs -= Math.min(15, f.delayed_recovery_score * 15)
-  frs -= f.prolonged_decel_flag * 20
-  frs -= f.late_decel_likelihood * 10
-  frs *= Math.max(f.signal_quality, 0.3)
-
-  frs = clamp(frs, 0, 100)
-  const modelFRS = (1 - (probs[2] * 1.5 + probs[1] * 0.5)) * 100
-  return Math.round(clamp(frs * 0.65 + modelFRS * 0.35, 0, 100))
+  const frs = 100.0 / (1.0 + Math.exp(-s))
+  return Math.round(clamp(frs, 0, 100))
 }
 
 // ── Gated meta-fusion (v3 — 4 experts + attention gating) ─────────────────────
@@ -307,12 +340,14 @@ function conformalSet(probs: number[]): number[] {
   return included.length > 0 ? included : [probs.indexOf(Math.max(...probs))]
 }
 
-// ── Combined uncertainty (v3) ─────────────────────────────────────────────────
-// Combines normalised entropy (epistemic) + set-size fraction (conformal, aleatoric).
+// ── Combined uncertainty (PulseFM-ReserveNet spec §16) ───────────────────────
+// U = 0.6 × H(p̄)_norm + 0.4 × Var_norm
+// In the frontend (single-model inference) Var is approximated as 1 - max(p),
+// which correlates with ensemble disagreement when confidence is low.
 function combinedUncertainty(probs: number[]): 'low' | 'moderate' | 'high' {
-  const ent     = entropy(probs)
-  const setSize = conformalSet(probs).length / N_CLASSES
-  const score   = clamp(0.5 * ent + 0.5 * setSize, 0, 1)
+  const ent     = entropy(probs)                        // H(p̄) normalised 0–1
+  const varApprox = clamp(1.0 - Math.max(...probs), 0, 1) // proxy for ensemble Var
+  const score   = clamp(0.6 * ent + 0.4 * varApprox, 0, 1)
   return score < 0.25 ? 'low' : score < 0.55 ? 'moderate' : 'high'
 }
 
