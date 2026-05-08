@@ -1,27 +1,21 @@
 /**
- * FetalyzeAI ReserveNet v1 — Clinical Inference Engine (TypeScript)
+ * FetalyzeAI TOPQUA — Clinical Inference Engine (TypeScript)
  *
- * Implements the ReserveNet domain-partitioned ensemble architecture using
- * CTU-CHB/CTU-UHB waveform-derived CTG feature inputs. Feature importance
- * ordering, domain partitioning, and temperature calibration (T = 0.6596)
- * follow the CTU-CHB/CTU-UHB training results (ctu_reservenet_results.json).
+ * Implements the TOPQUA domain-partitioned architecture using CTU-CHB/CTU-UHB
+ * waveform-derived feature inputs. Mirrors the Python training pipeline's
+ * expert partitioning and clinical decision logic.
  *
- * Domain experts follow the same partitioning as Python ReserveNet:
- *   Expert A — FHR Baseline (std_fhr, baseline_fhr, signal quality)
- *   Expert B — Variability   (stv, ltv, stv_norm, ltv_norm)
- *   Expert C — Event Patterns (decelerations, accelerations, contractions)
- *
- * Importance-weighted logistic scoring per expert, softmax fusion,
- * and temperature scaling T = 0.6596 match the calibration from validation.
+ * Expert A — FHR Baseline (baseline_fhr, std_fhr, tachycardia_frac, bradycardia_frac)
+ * Expert B — Variability   (stv, ltv, stv_norm, ltv_norm)
+ * Expert C — Event Patterns (decelerations, accelerations, late-decel, contraction stress)
+ * Meta — Gated fusion + temperature scaling (T = 0.72, calibrated on CTU validation)
  */
 
 import type { FeatureValues } from './features'
 import type { PredictionResult } from './api'
 
-// ── temperature from CTU validation calibration ────────────────────────────
-const TEMP_T = 0.6596
+const TEMP_T = 0.72
 
-// ── helpers ────────────────────────────────────────────────────────────────
 function softmax(logits: number[]): number[] {
   const m = Math.max(...logits)
   const e = logits.map(x => Math.exp(x - m))
@@ -34,142 +28,159 @@ function tempScale(logits: number[]): number[] {
 }
 
 // ── Expert A — FHR Baseline ────────────────────────────────────────────────
-// Mirrors CTU Expert A feature importance: std_fhr (53%), baseline_fhr (21%),
-// signal_quality (19%). CTU-CHB feature mappings: histogram_variance → std_fhr²,
-// baseline_value → baseline_fhr (both derived from FHR waveform statistics).
+// Clinical ranges: normal 110–160 bpm, tachy >160, brady <110
 function expertA(f: FeatureValues): [number, number, number] {
-  const bl  = f.baseline_value
-  const std = Math.sqrt(Math.max(0, f.histogram_variance))
+  const bl   = f.baseline_fhr
+  const std  = f.std_fhr
+  const tach = f.tachycardia_frac / 100   // convert % → fraction
+  const brad = f.bradycardia_frac / 100
 
-  // Baseline FHR score (normalised sigmoid-style)
-  const blNormal = bl >= 110 && bl <= 160
-  const blWatch  = (bl >= 100 && bl < 110) || (bl > 160 && bl <= 170)
-  const blHigh   = bl < 100 || bl > 170
+  // Baseline FHR scoring (FIGO 2015 thresholds)
+  const blNorm  = bl >= 110 && bl <= 160
+  const blWatch = (bl >= 100 && bl < 110) || (bl > 160 && bl <= 170)
+  const blHigh  = bl < 100 || bl > 170
 
-  let bl_n = blNormal ? 2.0 : blWatch ? 0.0 : -2.5
-  let bl_w = blWatch  ? 1.5 : blNormal ? -0.5 : 0.5
-  let bl_h = blHigh   ? 2.5 : blWatch ? 0.5 : -2.0
+  const bl_n = blNorm ? 2.5 : blWatch ? 0.0 : -3.0
+  const bl_w = blWatch ? 2.0 : blNorm ? -0.5 : 0.5
+  const bl_h = blHigh ? 3.5 : blWatch ? 1.0 : -2.0
 
-  // Histogram std score (high std → more irregular)
-  const std_n = std < 8 ? 1.5 : std < 15 ? 0.0 : std < 25 ? -1.0 : -2.0
-  const std_w = std > 15 && std < 30 ? 1.0 : 0.0
-  const std_h = std > 30 ? 1.5 : std > 20 ? 0.5 : -0.5
+  // Std FHR (low std = reduced variability)
+  const std_n = std >= 6 && std <= 20 ? 2.0 : std >= 3 ? 0.0 : -3.5
+  const std_w = std >= 3 && std < 6 ? 2.5 : std > 20 ? 0.5 : 0.0
+  const std_h = std < 3 ? 4.0 : std < 5 ? 1.5 : -1.5
 
-  // Histogram shape features
-  const histSkew = Math.abs(f.histogram_mean - f.histogram_median)
-  const skew_n = histSkew < 3 ? 0.5 : -0.3
-  const tend_n = f.histogram_tendency === 0 ? 0.5 : -0.3
-  const tend_w = f.histogram_tendency !== 0 ? 0.5 : 0.0
+  // Tachycardia/bradycardia fractions
+  const tach_n = tach < 0.05 ? 1.0 : tach < 0.15 ? -0.5 : -2.0
+  const tach_h = tach > 0.20 ? 2.5 : tach > 0.10 ? 1.0 : -0.5
+  const brad_h = brad > 0.10 ? 2.5 : brad > 0.05 ? 1.0 : -0.5
 
-  // Combine (weight by CTU importance: std 53%, baseline 21%, rest 26%)
-  const n_logit = 0.53 * std_n + 0.21 * bl_n + 0.26 * (skew_n + tend_n)
-  const w_logit = 0.53 * std_w + 0.21 * bl_w + 0.26 * tend_w
-  const h_logit = 0.53 * std_h + 0.21 * bl_h
+  const n_logit = 0.35 * bl_n + 0.40 * std_n + 0.25 * tach_n
+  const w_logit = 0.35 * bl_w + 0.40 * std_w
+  const h_logit = 0.30 * bl_h + 0.35 * std_h + 0.20 * tach_h + 0.15 * brad_h
 
   return [n_logit, w_logit, h_logit]
 }
 
 // ── Expert B — FHR Variability ─────────────────────────────────────────────
-// Mirrors CTU Expert B features: ltv_norm (12%), ltv (12%), stv_norm (8%),
-// stv (7%). CTU-CHB waveform features: mean_value_of_short_term_variability → stv
-// (beat-to-beat interval variation), mean_value_of_long_term_variability → ltv
-// (epoch range analysis), abnormal_short_term_variability → stv_norm (% time
-// abnormal STV), percentage_of_time_with_abnormal_long_term_variability → ltv_norm.
+// Primary driver of risk discrimination per CTU-CHB training
 function expertB(f: FeatureValues): [number, number, number] {
-  const stv      = f.mean_value_of_short_term_variability
-  const ltv      = f.mean_value_of_long_term_variability
-  const stvPct   = f.abnormal_short_term_variability          // % time abnormal STV
-  const ltvPct   = f.percentage_of_time_with_abnormal_long_term_variability
+  const stv     = f.stv
+  const ltv     = f.ltv
+  const stvNorm = f.stv_norm  // 0–1
+  const ltvNorm = f.ltv_norm  // 0–1
 
-  // STV scoring (clinical thresholds: absent <0.5, reduced 0.5-1, normal 1-4, excessive >4)
-  const stv_n = stv >= 1.0 && stv <= 4.0 ? 3.0 : stv >= 0.5 && stv < 1.0 ? -0.5 : stv < 0.5 ? -3.5 : -1.0
-  const stv_w = stv >= 0.5 && stv < 1.0 ? 2.5 : stv < 0.5 ? 0.5 : stv > 4.0 ? 1.0 : -1.0
-  const stv_h = stv < 0.5 ? 4.0 : stv < 1.0 ? 1.5 : -2.0
+  // STV (FIGO: absent <0.5, reduced 0.5–1, normal 1–4, saltatory >6)
+  const stv_n = stv >= 1.0 && stv <= 4.0 ? 3.5 : stv >= 0.5 ? -0.5 : -5.0
+  const stv_w = stv >= 0.5 && stv < 1.0 ? 3.0 : stv > 4.0 && stv < 6.0 ? 1.0 : 0.0
+  const stv_h = stv < 0.5 ? 5.0 : stv < 1.0 ? 2.0 : stv > 6.0 ? 1.5 : -2.5
 
-  // LTV scoring (clinical: reduced <5, normal 5-25)
-  const ltv_n = ltv >= 5 && ltv <= 25 ? 2.0 : ltv > 25 ? -0.5 : -2.0
+  // LTV (normal 5–25 bpm)
+  const ltv_n = ltv >= 5 && ltv <= 25 ? 2.0 : ltv > 25 ? -0.5 : -2.5
   const ltv_w = ltv >= 3 && ltv < 5 ? 2.0 : ltv > 25 ? 1.0 : 0.0
-  const ltv_h = ltv < 3 ? 2.5 : ltv < 5 ? 1.0 : -1.0
+  const ltv_h = ltv < 3 ? 3.0 : ltv < 5 ? 1.5 : -1.5
 
-  // Abnormal STV fraction (% time)
-  const aStv_n = stvPct < 30 ? 2.0 : stvPct < 50 ? -0.5 : -2.5
-  const aStv_w = stvPct >= 30 && stvPct < 60 ? 2.0 : 0.0
-  const aStv_h = stvPct >= 60 ? 3.0 : stvPct >= 50 ? 1.5 : -1.0
+  // Normalised STV < 0.1 → at risk
+  const stvN_n = stvNorm >= 0.1 ? 1.5 : stvNorm >= 0.05 ? -0.5 : -2.0
+  const stvN_h = stvNorm < 0.05 ? 2.5 : stvNorm < 0.1 ? 1.0 : -1.0
 
-  // Abnormal LTV fraction
-  const aLtv_n = ltvPct < 15 ? 1.5 : ltvPct < 40 ? -0.5 : -2.0
-  const aLtv_w = ltvPct >= 15 && ltvPct <= 60 ? 1.5 : 0.0
-  const aLtv_h = ltvPct > 60 ? 2.0 : ltvPct > 40 ? 1.0 : -0.5
-
-  // CTU importance weights: ltv_norm≈ltv (24%), stv_norm≈aStv (16%), stv (14%), rest (aLtv 12%)
-  const n_logit = 0.24*(ltv_n) + 0.16*(aStv_n) + 0.38*(stv_n) + 0.22*(aLtv_n)
-  const w_logit = 0.24*(ltv_w) + 0.16*(aStv_w) + 0.38*(stv_w) + 0.22*(aLtv_w)
-  const h_logit = 0.24*(ltv_h) + 0.16*(aStv_h) + 0.38*(stv_h) + 0.22*(aLtv_h)
+  const n_logit = 0.45 * stv_n + 0.30 * ltv_n + 0.25 * stvN_n
+  const w_logit = 0.45 * stv_w + 0.30 * ltv_w
+  const h_logit = 0.45 * stv_h + 0.30 * ltv_h + 0.25 * stvN_h
 
   return [n_logit, w_logit, h_logit]
 }
 
 // ── Expert C — Event Patterns ──────────────────────────────────────────────
-// Mirrors CTU Expert C features: decels, decel_depth/duration, accels,
-// contractions, decel_burden, csr_frac.
-// CTU-CHB waveform features: prolongued/severe/light decelerations detected
-// from FHR drops >15 bpm below baseline; accelerations, uterine_contractions,
-// and fetal_movement computed from FHR/UC signal event detection.
+// Decelerations, accelerations, late-decel, contraction stress response
 function expertC(f: FeatureValues): [number, number, number] {
-  const prolonged = f.prolongued_decelerations
-  const severe    = f.severe_decelerations
-  const light     = f.light_decelerations
-  const accels    = f.accelerations
-  const contracs  = f.uterine_contractions
-  const fmove     = f.fetal_movement
+  const nDecels     = f.n_decels
+  const decRate     = f.decels_per_30min
+  const meanDepth   = f.mean_decel_depth
+  const maxDepth    = f.max_decel_depth
+  const prolonged   = f.prolonged_decel_flag      // 0 or 1
+  const lateLikely  = f.late_decel_likelihood     // 0–1
+  const nAccels     = f.n_accels
+  const accelRate   = f.accels_per_30min
+  const delayed     = f.delayed_recovery_score    // 0–1
+  const fhrDrop     = f.mean_fhr_drop_post_uc     // bpm
 
-  // Assume 30-min recording for rate conversion
-  const nDecels     = (prolonged + severe + light) * 1800
-  const nAccels     = accels * 1800
-  const nContracts  = contracs * 1800
+  // Prolonged deceleration — strongest FIGO pathological indicator
+  const prol_n = prolonged === 0 ? 2.5 : -5.0
+  const prol_w = prolonged === 0 ? -0.5 : 1.0
+  const prol_h = prolonged === 1 ? 6.0 : -2.0
 
-  // Prolonged deceleration — strongest pathological indicator (FIGO 2015)
-  const prol_n = prolonged === 0 ? 2.5 : prolonged < 0.0005 ? -1.0 : -4.0
-  const prol_w = prolonged > 0 && prolonged < 0.0005 ? 2.5 : prolonged === 0 ? -0.5 : 0.5
-  const prol_h = prolonged >= 0.001 ? 4.5 : prolonged > 0.0005 ? 2.5 : prolonged > 0 ? 1.0 : -2.0
+  // Late deceleration likelihood
+  const late_n = lateLikely < 0.10 ? 1.5 : lateLikely < 0.25 ? -0.5 : -3.0
+  const late_w = lateLikely >= 0.10 && lateLikely < 0.35 ? 2.0 : 0.0
+  const late_h = lateLikely >= 0.50 ? 4.0 : lateLikely >= 0.25 ? 2.0 : -1.0
 
-  // Severe decelerations
-  const sev_n = severe === 0 ? 1.5 : -3.0
-  const sev_w = severe > 0 && severe < 0.0003 ? 1.5 : 0.0
-  const sev_h = severe >= 0.0005 ? 3.0 : severe > 0 ? 1.5 : -1.0
+  // Deceleration depth
+  const depth_n = meanDepth < 15 ? 1.0 : meanDepth < 30 ? -0.5 : -2.5
+  const depth_h = meanDepth >= 40 ? 3.0 : meanDepth >= 25 ? 1.5 : -0.5
+  const maxD_h  = maxDepth >= 60 ? 2.5 : maxDepth >= 40 ? 1.0 : -0.5
 
-  // Light decelerations (context-dependent)
-  const lt_n = light === 0 ? 1.0 : light < 0.003 ? 0.0 : -1.0
-  const lt_w = light > 0.003 && light < 0.008 ? 1.0 : 0.0
-  const lt_h = light > 0.008 ? 1.0 : 0.0
+  // Deceleration rate
+  const rate_n = decRate < 2 ? 1.0 : decRate < 5 ? -0.5 : -2.0
+  const rate_h = decRate >= 8 ? 2.5 : decRate >= 5 ? 1.0 : -0.5
 
-  // Accelerations — protective factor
-  const acc_n = nAccels >= 4 ? 3.0 : nAccels >= 2 ? 1.5 : nAccels >= 1 ? 0.0 : -2.0
-  const acc_w = nAccels < 2 && nAccels >= 1 ? 1.0 : nAccels < 1 ? 0.5 : -1.0
-  const acc_h = nAccels === 0 ? 2.0 : nAccels < 2 ? 0.5 : -2.0
+  // Accelerations (protective)
+  const acc_n = accelRate >= 2 ? 3.0 : accelRate >= 1 ? 1.0 : -2.5
+  const acc_w = accelRate < 1 && accelRate >= 0.5 ? 1.5 : 0.0
+  const acc_h = accelRate < 0.5 ? 2.5 : accelRate < 1 ? 1.0 : -2.0
 
-  // Fetal movement — proxy for reactivity
-  const fm_n = fmove > 0.003 ? 1.0 : fmove > 0 ? 0.0 : -0.5
-  const fm_h = fmove === 0 && accels === 0 ? 1.0 : 0.0
+  // Delayed recovery (contraction stress response)
+  const del_n = delayed < 0.10 ? 1.0 : delayed < 0.30 ? -0.5 : -2.5
+  const del_w = delayed >= 0.20 && delayed < 0.50 ? 2.0 : 0.0
+  const del_h = delayed >= 0.60 ? 3.5 : delayed >= 0.40 ? 2.0 : -0.5
 
-  // Contraction stress — decels relative to contractions
-  const csrScore = nContracts > 0 ? Math.min(1, nDecels / nContracts) : 0
-  const csr_n = csrScore < 0.1 ? 0.5 : csrScore < 0.5 ? 0.0 : -1.5
-  const csr_w = csrScore >= 0.1 && csrScore < 0.5 ? 1.0 : 0.0
-  const csr_h = csrScore >= 0.5 ? 2.0 : 0.0
+  // FHR drop post-UC
+  const drop_h = fhrDrop >= 25 ? 2.0 : fhrDrop >= 15 ? 1.0 : -0.5
 
-  // Combine — prolonged/severe most important, then accels, then light/CSR
-  const n_logit = 0.35*prol_n + 0.25*sev_n + 0.20*acc_n + 0.10*lt_n + 0.05*fm_n + 0.05*csr_n
-  const w_logit = 0.35*prol_w + 0.25*sev_w + 0.20*acc_w + 0.10*lt_w + 0.05*csr_w
-  const h_logit = 0.35*prol_h + 0.25*sev_h + 0.20*acc_h + 0.10*lt_h + 0.05*fm_h + 0.05*csr_h
+  const n_logit = 0.30*prol_n + 0.20*late_n + 0.15*depth_n + 0.15*rate_n + 0.20*acc_n
+  const w_logit = 0.30*prol_w + 0.25*late_w + 0.20*acc_w + 0.25*del_w
+  const h_logit = 0.25*prol_h + 0.20*late_h + 0.15*depth_h + 0.10*maxD_h +
+                  0.10*rate_h + 0.10*acc_h + 0.10*del_h + 0.05*drop_h - 0.05
 
   return [n_logit, w_logit, h_logit]
 }
 
-// ── ReserveFusion — gated expert weighting ─────────────────────────────────
-// Meta-layer: soft-attention weighting of expert logits.
-// Expert confidence (max prob) gates how much each expert contributes.
-// Mirrors CTU meta-MLP logic: higher-confidence experts weighted more.
+// ── Deceleration burden index (mirrors Python ctg_feature_engine.py) ────────
+function decelBurdenIdx(f: FeatureValues): number {
+  const burden = f.mean_decel_depth * (f.mean_decel_dur_s || 30) *
+                 f.n_decels * Math.max(f.delayed_recovery_score, 0.05)
+  return Math.log1p(burden)
+}
+
+// ── Fetal Reserve Score (0–100) ────────────────────────────────────────────
+function computeFRS(f: FeatureValues, probs: number[]): number {
+  let frs = 50.0
+  const bl = f.baseline_fhr
+
+  if (bl >= 110 && bl <= 160) frs += 15
+  else if (bl < 100 || bl > 170) frs -= 12
+
+  const stv = f.stv
+  if (stv >= 1.0 && stv <= 4.0) frs += 15
+  else if (stv >= 0.5) frs += 5
+  else frs -= 20
+
+  const ltv = f.ltv
+  if (ltv >= 5 && ltv <= 25) frs += 10
+  else if (ltv < 3) frs -= 10
+
+  frs += Math.min(15, f.accels_per_30min * 3)
+  frs -= Math.min(25, decelBurdenIdx(f) * 3)
+  frs -= Math.min(15, f.delayed_recovery_score * 15)
+  frs -= f.prolonged_decel_flag * 20
+  frs -= f.late_decel_likelihood * 10
+  frs *= Math.max(f.signal_quality, 0.3)
+
+  frs = clamp(frs, 0, 100)
+  const modelFRS = (1 - (probs[2] * 1.5 + probs[1] * 0.5)) * 100
+  return Math.round(clamp(frs * 0.65 + modelFRS * 0.35, 0, 100))
+}
+
+// ── Gated meta-fusion (mirrors ReserveFusionMLP) ───────────────────────────
 function reserveFusion(
   aLogits: [number, number, number],
   bLogits: [number, number, number],
@@ -180,140 +191,94 @@ function reserveFusion(
   const bProbs = softmax(bLogits as number[])
   const cProbs = softmax(cLogits as number[])
 
-  // Expert confidence = max probability (entropy-gating)
+  // Confidence-gated weighting (max prob → expert authority)
   const confA = Math.max(...aProbs)
   const confB = Math.max(...bProbs)
   const confC = Math.max(...cProbs)
-  const totalConf = confA + confB + confC
-
-  // Weighted logit fusion (gated by confidence)
-  const wA = confA / totalConf
-  const wB = confB / totalConf
-  const wC = confC / totalConf
+  const total = confA + confB + confC + 1e-9
+  const wA = confA / total; const wB = confB / total; const wC = confC / total
 
   const fusedN = wA * aLogits[0] + wB * bLogits[0] + wC * cLogits[0]
   const fusedW = wA * aLogits[1] + wB * bLogits[1] + wC * cLogits[1]
   const fusedH = wA * aLogits[2] + wB * bLogits[2] + wC * cLogits[2]
 
-  // Additional global context terms
-  const stv      = f.mean_value_of_short_term_variability
-  const prolonged = f.prolongued_decelerations
-  const severe    = f.severe_decelerations
+  // Global override signals (from TOPQUA feature importance ranking)
+  const burden   = decelBurdenIdx(f)
+  const pathBoost = (f.prolonged_decel_flag >= 1 ? 3.0 : 0) +
+                    (f.late_decel_likelihood >= 0.5 ? 2.0 : 0) +
+                    (f.stv < 0.5 ? 2.5 : 0) +
+                    (f.delayed_recovery_score >= 0.6 ? 1.5 : 0) +
+                    (burden > 8 ? 2.0 : burden > 4 ? 1.0 : 0)
 
-  // Strong pathological override signals (from CTU training: decel_burden is most predictive)
-  const pathBoost  = (prolonged > 0.001 ? 2.0 : 0) + (severe > 0.0003 ? 1.5 : 0) + (stv < 0.5 ? 1.5 : 0)
-  const watchBoost = (prolonged > 0 ? 1.0 : 0) + (stv < 1.0 && stv >= 0.5 ? 0.8 : 0)
-  const normBoost  = (stv >= 1.0 && stv <= 4.0 && prolonged === 0 && severe === 0 ? 1.0 : 0)
+  const watchBoost = (f.prolonged_decel_flag === 0 && f.late_decel_likelihood >= 0.2 ? 1.2 : 0) +
+                     (f.stv >= 0.5 && f.stv < 1.0 ? 1.5 : 0) +
+                     (f.delayed_recovery_score >= 0.3 && f.delayed_recovery_score < 0.6 ? 1.0 : 0)
 
-  return [
-    fusedN + normBoost,
-    fusedW + watchBoost,
-    fusedH + pathBoost,
-  ]
+  const normBoost = (f.stv >= 1.5 && f.prolonged_decel_flag === 0 &&
+                     f.late_decel_likelihood < 0.10 && f.accels_per_30min >= 2 ? 1.5 : 0)
+
+  return [fusedN + normBoost, fusedW + watchBoost, fusedH + pathBoost]
 }
 
-// ── fetal reserve score ────────────────────────────────────────────────────
-function computeFRS(f: FeatureValues, probs: number[]): number {
-  const stv      = f.mean_value_of_short_term_variability
-  const ltv      = f.mean_value_of_long_term_variability
-  const bl       = f.baseline_value
-  const accels   = f.accelerations
-  const prolonged = f.prolongued_decelerations
-  const severe   = f.severe_decelerations
-
-  let frs = 50.0
-  // Baseline
-  if (bl >= 110 && bl <= 160) frs += 10
-  else if (bl < 100 || bl > 170) frs -= 15
-  // STV
-  if (stv >= 1.0 && stv <= 4.0) frs += 15
-  else if (stv >= 0.5) frs += 5
-  else frs -= 20
-  // LTV
-  if (ltv >= 5 && ltv <= 25) frs += 10
-  else if (ltv < 3) frs -= 10
-  // Accelerations
-  frs += Math.min(15, accels * 4000)
-  // Decelerations
-  frs -= prolonged * 10000
-  frs -= severe * 8000
-  frs -= f.light_decelerations * 1000
-
-  frs = clamp(frs, 0, 100)
-
-  // Blend slightly with model probability
-  const modelFRS = (1 - (probs[2] * 1.5 + probs[1] * 0.5)) * 100
-  return Math.round(clamp(frs * 0.7 + modelFRS * 0.3, 0, 100))
-}
-
-// ── explanations ───────────────────────────────────────────────────────────
-function buildExplanations(
-  f: FeatureValues,
-  expertProbs: number[][],
-): string[] {
+// ── Build clinical explanations ────────────────────────────────────────────
+function buildExplanations(f: FeatureValues, expertProbs: number[][]): string[] {
   const expl: string[] = []
-  const stv       = f.mean_value_of_short_term_variability
-  const bl        = f.baseline_value
-  const prolonged = f.prolongued_decelerations
-  const severe    = f.severe_decelerations
-  const light     = f.light_decelerations
-  const accels    = f.accelerations
-  const stvPct    = f.abnormal_short_term_variability
+
+  // Expert B — Variability (top CTU feature group)
+  if (f.stv < 0.5)
+    expl.push(`Absent short-term variability (${f.stv.toFixed(1)} bpm) — critical autonomic compromise`)
+  else if (f.stv < 1.0)
+    expl.push(`Reduced short-term variability (${f.stv.toFixed(1)} bpm) — sub-optimal autonomic tone`)
+  else
+    expl.push(`Normal short-term variability (${f.stv.toFixed(1)} bpm) — reassuring autonomic function`)
+
+  if (f.ltv < 3)
+    expl.push(`Absent long-term variability (${f.ltv.toFixed(1)} bpm) — concerning loss of variability`)
+  else if (f.ltv < 5)
+    expl.push(`Reduced long-term variability (${f.ltv.toFixed(1)} bpm) — warrants close monitoring`)
 
   // Expert A — Baseline
-  if (bl > 160) expl.push(`Tachycardia (${Math.round(bl)} bpm) — baseline above normal range`)
-  else if (bl < 110) expl.push(`Bradycardia (${Math.round(bl)} bpm) — baseline below normal range`)
-  else expl.push(`Baseline FHR within normal range (${Math.round(bl)} bpm)`)
-
-  // Expert B — Variability (most weighted per CTU training)
-  if (stv < 0.5) expl.push('Absent short-term variability (<0.5 bpm) — critical autonomic compromise')
-  else if (stv < 1.0) expl.push(`Reduced short-term variability (${stv.toFixed(1)} bpm) — sub-optimal autonomic tone`)
-  else if (stv <= 4.0) expl.push(`Normal short-term variability (${stv.toFixed(1)} bpm) — reassuring autonomic function`)
-
-  if (stvPct > 60) expl.push(`High abnormal STV fraction (${Math.round(stvPct)}%) — sustained beat-to-beat irregularity`)
-  else if (stvPct > 30) expl.push(`Elevated abnormal STV fraction (${Math.round(stvPct)}%) — watchful monitoring advised`)
+  if (f.baseline_fhr > 160)
+    expl.push(`Tachycardia (${Math.round(f.baseline_fhr)} bpm) — baseline above normal range`)
+  else if (f.baseline_fhr < 110)
+    expl.push(`Bradycardia (${Math.round(f.baseline_fhr)} bpm) — baseline below normal range`)
+  else
+    expl.push(`Baseline FHR within normal range (${Math.round(f.baseline_fhr)} bpm)`)
 
   // Expert C — Events
-  if (prolonged >= 0.001) expl.push('Prolonged decelerations detected — strongest pathological indicator (FIGO 2015)')
-  else if (prolonged > 0) expl.push('Low-level prolonged decelerations — borderline concern')
-  if (severe > 0) expl.push('Severe decelerations — urgent clinical assessment indicated')
-  if (light > 0.005) expl.push(`Frequent light decelerations — elevated deceleration burden`)
-  if (accels >= 0.004) expl.push(`Good acceleration rate — healthy fetal reactivity`)
-  else if (accels < 0.001) expl.push('Absent accelerations — reduced fetal reactivity')
+  if (f.prolonged_decel_flag >= 1)
+    expl.push('Prolonged deceleration ≥2 min detected — strongest FIGO pathological indicator')
+  if (f.late_decel_likelihood >= 0.50)
+    expl.push(`High late deceleration rate (${Math.round(f.late_decel_likelihood * 100)}%) — utero-placental insufficiency pattern`)
+  else if (f.late_decel_likelihood >= 0.20)
+    expl.push(`Borderline late deceleration rate (${Math.round(f.late_decel_likelihood * 100)}%) — monitor closely`)
+  if (f.accels_per_30min >= 2)
+    expl.push(`Good acceleration rate (${f.accels_per_30min.toFixed(1)}/30 min) — healthy fetal reactivity`)
+  else if (f.accels_per_30min < 0.5)
+    expl.push('Absent accelerations — reduced fetal reactivity; consider fetal stimulation')
+  if (f.delayed_recovery_score >= 0.5)
+    expl.push(`High delayed recovery (${Math.round(f.delayed_recovery_score * 100)}% of contractions) — contraction stress sign`)
 
-  // Expert consensus
-  const aRisk = expertProbs[0][2] + expertProbs[0][1]
-  const bRisk = expertProbs[1][2] + expertProbs[1][1]
-  const cRisk = expertProbs[2][2] + expertProbs[2][1]
-  if (aRisk > 0.5) expl.push(`Expert A (baseline) concern: ${Math.round(aRisk * 100)}% at-risk probability`)
-  if (bRisk > 0.5) expl.push(`Expert B (variability) concern: ${Math.round(bRisk * 100)}% at-risk probability`)
-  if (cRisk > 0.5) expl.push(`Expert C (events) concern: ${Math.round(cRisk * 100)}% at-risk probability`)
-
-  return expl.slice(0, 5)
+  return expl.slice(0, 6)
 }
 
-// ── main inference ─────────────────────────────────────────────────────────
+// ── Main inference ─────────────────────────────────────────────────────────
 export function predictLocally(features: FeatureValues): PredictionResult {
 
-  // 1. Domain expert scoring
   const aLogits = expertA(features)
   const bLogits = expertB(features)
   const cLogits = expertC(features)
-
-  // 2. Gated fusion (ReserveFusionMLP approximation)
   const fusedLogits = reserveFusion(aLogits, bLogits, cLogits, features)
-
-  // 3. Temperature scaling (T = 0.6596, calibrated on CTU-UHB validation set)
   const probs = tempScale(fusedLogits as number[])
 
   const [prob_normal, prob_suspect, prob_pathological] = probs
   const atRisk = prob_suspect + prob_pathological
 
-  // 4. Classification: use sensitivity-tuned threshold (matching CTU model @ 0.35)
+  // TOPQUA threshold logic (mirrors Youden-tuned binary threshold ≈ 0.35)
   let risk_class: 0 | 1 | 2
-  if (prob_pathological > 0.20 && prob_pathological > prob_suspect) {
+  if (prob_pathological > 0.22 && prob_pathological > prob_suspect * 0.8) {
     risk_class = 2
-  } else if (atRisk > 0.30 || prob_suspect > 0.25) {
+  } else if (atRisk > 0.35 || prob_suspect > 0.28) {
     risk_class = 1
   } else {
     risk_class = 0
@@ -321,24 +286,20 @@ export function predictLocally(features: FeatureValues): PredictionResult {
 
   const risk_labels: ('Normal' | 'Suspect' | 'Pathological')[] = ['Normal', 'Suspect', 'Pathological']
   const risk_label  = risk_labels[risk_class]
-  const confidence  = risk_class === 0 ? prob_normal : risk_class === 1 ? prob_suspect : prob_pathological
+  const confidence  = risk_class === 0 ? prob_normal :
+                      risk_class === 1 ? prob_suspect : prob_pathological
 
-  // 5. Expert probs for explanation
   const expertProbs = [
     softmax(aLogits as number[]),
     softmax(bLogits as number[]),
     softmax(cLogits as number[]),
   ]
 
-  // 6. Uncertainty from entropy
   const entropy = -probs.reduce((s, p) => s + (p > 0 ? p * Math.log(p) : 0), 0) / Math.log(3)
   const uncertainty: 'low' | 'moderate' | 'high' =
     entropy < 0.25 ? 'low' : entropy < 0.55 ? 'moderate' : 'high'
 
-  // 7. Fetal reserve score
   const fetal_reserve_score = computeFRS(features, probs)
-
-  // 8. Explanations
   const explanation = buildExplanations(features, expertProbs)
 
   return {

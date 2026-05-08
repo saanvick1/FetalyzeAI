@@ -494,3 +494,126 @@
 
 .result-error strong { display: block; font-weight: 600; margin-bottom: 2px; }
 .result-error p { color: var(--error-600); margin: 0; font-size: 0.8rem; }
+
+/* Doctor spectrum gauge */
+.doc-spectrum {
+  margin-top: 18px;
+  padding: 14px 16px;
+  background: #f9fafb;
+  border-radius: 10px;
+  border: 1px solid var(--neutral-200);
+}
+.doc-spectrum__label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--neutral-700);
+  margin-bottom: 10px;
+}
+.doc-spectrum__bar {
+  position: relative;
+  display: flex;
+  height: 14px;
+  border-radius: 7px;
+  overflow: hidden;
+  gap: 1px;
+}
+.doc-spectrum__seg--g { background: linear-gradient(90deg, #16a34a, #4ade80); }
+.doc-spectrum__seg--y { background: linear-gradient(90deg, #facc15, #f59e0b); }
+.doc-spectrum__seg--r { background: linear-gradient(90deg, #f87171, #dc2626); }
+.doc-spectrum__needle {
+  position: absolute;
+  top: -8px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.doc-spectrum__needle-pin {
+  width: 4px;
+  height: 30px;
+  border-radius: 2px;
+  box-shadow: 0 0 0 2px white, 0 1px 4px rgba(0,0,0,0.25);
+}
+.doc-spectrum__needle-lbl {
+  font-size: 0.72rem;
+  font-weight: 700;
+  margin-top: 2px;
+  background: white;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--neutral-200);
+}
+.doc-spectrum__ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 0.68rem;
+  color: var(--neutral-500);
+}
+
+/* Doctor waterfall */
+.doc-waterfall {
+  margin-top: 18px;
+  padding: 14px 16px;
+  background: #fff;
+  border: 1px solid var(--neutral-200);
+  border-radius: 10px;
+}
+.doc-waterfall__title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--neutral-700);
+  margin-bottom: 12px;
+}
+.doc-waterfall__rows { display: flex; flex-direction: column; gap: 8px; }
+.doc-wf-row { display: grid; grid-template-columns: 150px 1fr; gap: 12px; align-items: center; }
+.doc-wf-row__label {
+  font-size: 0.74rem;
+  color: var(--neutral-700);
+  font-weight: 500;
+  text-align: right;
+}
+.doc-wf-row__track {
+  position: relative;
+  height: 14px;
+  background: #f3f4f6;
+  border-radius: 7px;
+  overflow: hidden;
+}
+.doc-wf-row__fill { height: 100%; border-radius: 7px; transition: width 0.3s ease; }
+.doc-wf-row__pct {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: var(--neutral-700);
+  text-shadow: 0 0 3px rgba(255,255,255,0.85);
+}
+
+/* Doctor vital-signs cards */
+.doc-vitals {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-top: 14px;
+}
+.doc-vital {
+  padding: 12px;
+  border-radius: 10px;
+  border: 1.5px solid;
+  background: #fff;
+}
+.doc-vital--normal { border-color: #bbf7d0; background: #f0fdf4; }
+.doc-vital--watch  { border-color: #fde68a; background: #fffbeb; }
+.doc-vital--high   { border-color: #fecaca; background: #fef2f2; }
+.doc-vital__lab    { font-size: 0.7rem; color: var(--neutral-500); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.doc-vital__val    { font-size: 1.05rem; font-weight: 700; color: var(--neutral-800); margin-top: 4px; }
+.doc-vital__val span { font-size: 0.7rem; font-weight: 500; color: var(--neutral-500); margin-left: 4px; }
+.doc-vital__good   { font-size: 0.68rem; color: var(--neutral-500); margin-top: 6px; }
+
+@media (max-width: 700px) {
+  .doc-vitals { grid-template-columns: 1fr 1fr; }
+  .doc-wf-row { grid-template-columns: 110px 1fr; }
+}

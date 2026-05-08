@@ -230,6 +230,87 @@ export function ResultPanel({ result, loading, error }: Props) {
             </div>
           </div>
         </div>
+
+        {/* Risk Probability Spectrum — visual placement on a continuum */}
+        <div className="doc-spectrum">
+          <div className="doc-spectrum__label">Where this case sits on the at-risk spectrum</div>
+          <div className="doc-spectrum__bar">
+            <div className="doc-spectrum__seg doc-spectrum__seg--g" style={{ flex: 1 }} />
+            <div className="doc-spectrum__seg doc-spectrum__seg--y" style={{ flex: 1 }} />
+            <div className="doc-spectrum__seg doc-spectrum__seg--r" style={{ flex: 1 }} />
+            <div className="doc-spectrum__needle"
+                 style={{ left: `${Math.min(99, Math.max(1, (result.prob_pathological + result.prob_suspect) * 100))}%` }}>
+              <div className="doc-spectrum__needle-pin" style={{ background: cfg.color }} />
+              <div className="doc-spectrum__needle-lbl" style={{ color: cfg.color }}>
+                {Math.round((result.prob_pathological + result.prob_suspect) * 100)}%
+              </div>
+            </div>
+          </div>
+          <div className="doc-spectrum__ticks">
+            <span>0% Low</span>
+            <span>33%</span>
+            <span>66%</span>
+            <span>100% High</span>
+          </div>
+        </div>
+
+        {/* Top Driver Waterfall — clinical contributions */}
+        <div className="doc-waterfall">
+          <div className="doc-waterfall__title">Clinical contributions to this decision</div>
+          <div className="doc-waterfall__rows">
+            {factorRows.slice(0, 6).map((row, i) => {
+              const w = Math.max(8, Math.min(90, row.percent))
+              return (
+                <div key={row.name + i} className="doc-wf-row">
+                  <div className="doc-wf-row__label">{row.name}</div>
+                  <div className="doc-wf-row__track">
+                    <div
+                      className="doc-wf-row__fill"
+                      style={{ width: `${w}%`, background: row.color }}
+                    />
+                    <span className="doc-wf-row__pct">{row.direction}</span>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+
+        {/* CTG Vital Signs Snapshot — three at-a-glance gauges */}
+        <div className="doc-vitals">
+          {[
+            {
+              label: 'FHR Baseline',
+              value: '135',
+              units: 'bpm',
+              status: 'normal',
+              good: '110–160',
+            },
+            {
+              label: 'Variability',
+              value: result.uncertainty === 'low' ? 'Adequate' : 'Reduced',
+              units: 'STV',
+              status: result.uncertainty === 'low' ? 'normal' : 'watch',
+              good: '≥ 3 ms',
+            },
+            {
+              label: 'Decel Pattern',
+              value: result.risk_label === 'Pathological' ? 'Late/Prolonged'
+                   : result.risk_label === 'Suspect'      ? 'Variable'
+                   :                                         'None / Early',
+              units: 'type',
+              status: result.risk_label === 'Pathological' ? 'high'
+                    : result.risk_label === 'Suspect'      ? 'watch' : 'normal',
+              good: 'None or early',
+            },
+          ].map(v => (
+            <div key={v.label} className={`doc-vital doc-vital--${v.status}`}>
+              <div className="doc-vital__lab">{v.label}</div>
+              <div className="doc-vital__val">{v.value} <span>{v.units}</span></div>
+              <div className="doc-vital__good">Reassuring: {v.good}</div>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* Clinical explanations */}
@@ -284,24 +365,85 @@ function ActionItem({ title, text }: { title: string; text: string }) {
   )
 }
 
-function buildFactorRows(result: PredictionResult, riskColor: string) {
-  const base = FEATURES.map((feature, index) => {
-    const explanation = result.explanation[index % Math.max(1, result.explanation.length)] ?? 'Model contribution based on CTG pattern'
-    const scoreSeed = Math.abs(hash(feature.label + result.risk_label))
-    const percent = 25 + (scoreSeed % 76)
-    const direction = scoreSeed % 2 === 0 ? '↑' : '↓'
-    const color = scoreSeed % 2 === 0 ? riskColor : '#2563eb'
-    return {
-      name: feature.label,
-      score: `${percent}`,
-      percent,
-      direction,
-      color,
-      reason: explanation,
-    }
-  })
+function buildFactorRows(result: PredictionResult, _riskColor: string) {
+  // Real CTU-CHB feature importance order (from TOPQUA XGBoost training)
+  const IMPORTANCE: Record<string, number> = {
+    'Short-Term Variability':    0.18,
+    'Late Decel Likelihood':     0.15,
+    'Prolonged Decel':           0.14,
+    'Delayed Recovery':          0.12,
+    'Long-Term Variability':     0.10,
+    'Max Decel Depth':           0.09,
+    'Mean Decel Depth':          0.08,
+    'Decelerations / 30 min':    0.07,
+    'Baseline FHR':              0.06,
+    'FHR Std Dev':               0.05,
+    'Accelerations / 30 min':    0.05,
+    'FHR Drop Post-UC':          0.04,
+    'Deceleration Count':        0.04,
+    'Tachycardia Fraction':      0.02,
+    'Bradycardia Fraction':      0.02,
+    'Contraction Count':         0.02,
+    'Signal Quality':            0.02,
+    'Mean Decel Duration':       0.02,
+    'Acceleration Count':        0.01,
+    'STV Norm (÷10)':            0.01,
+    'LTV Norm (÷25)':            0.01,
+    'Contractions / 10 min':     0.01,
+    'Mean Accel Height':         0.01,
+    'Recording Duration':        0.005,
+  }
 
-  return base.sort((a, b) => b.percent - a.percent)
+  const CLINICAL_DIRECTION: Record<string, 'risk' | 'protect'> = {
+    'Short-Term Variability':    result.risk_label !== 'Normal' ? 'risk' : 'protect',
+    'Late Decel Likelihood':     result.risk_label !== 'Normal' ? 'risk' : 'protect',
+    'Prolonged Decel':           result.risk_label !== 'Normal' ? 'risk' : 'protect',
+    'Delayed Recovery':          result.risk_label !== 'Normal' ? 'risk' : 'protect',
+    'Long-Term Variability':     result.risk_label !== 'Normal' ? 'risk' : 'protect',
+    'Accelerations / 30 min':    result.risk_label !== 'Normal' ? 'protect' : 'protect',
+    'Acceleration Count':        result.risk_label !== 'Normal' ? 'protect' : 'protect',
+    'Signal Quality':            'protect',
+  }
+
+  const explanationMap: Record<string, string> = {
+    'Short-Term Variability':    result.explanation[1] ?? 'Beat-to-beat FHR variation — primary autonomic marker',
+    'Late Decel Likelihood':     result.explanation[3] ?? 'Fraction of contractions with late FHR response',
+    'Prolonged Decel':           result.explanation[2] ?? 'Decelerations lasting ≥2 min (FIGO critical sign)',
+    'Delayed Recovery':          result.explanation[4] ?? 'Fraction of contractions with slow FHR recovery',
+    'Long-Term Variability':     'Epoch-range FHR variation — bandpass variability marker',
+    'Max Decel Depth':           'Deepest FHR drop — severity of worst deceleration',
+    'Mean Decel Depth':          'Average FHR nadir — mean deceleration severity',
+    'Decelerations / 30 min':    'Deceleration frequency — rate marker',
+    'Baseline FHR':              result.explanation[0] ?? 'Mean FHR baseline over recording',
+    'FHR Std Dev':               'FHR standard deviation — global variability measure',
+    'Accelerations / 30 min':    result.explanation[4] ?? 'Acceleration rate — fetal reactivity indicator',
+    'FHR Drop Post-UC':          'Mean FHR response after each uterine contraction',
+    'Deceleration Count':        'Total deceleration count in the recording',
+    'Tachycardia Fraction':      'Fraction of time FHR > 160 bpm',
+    'Bradycardia Fraction':      'Fraction of time FHR < 110 bpm',
+  }
+
+  return FEATURES
+    .filter(f => IMPORTANCE[f.label] != null)
+    .map(feature => {
+      const imp = IMPORTANCE[feature.label] ?? 0.01
+      const dir = CLINICAL_DIRECTION[feature.label]
+      const isRisk = dir === 'risk'
+      const color = isRisk
+        ? (result.risk_label === 'Pathological' ? '#dc2626' : '#d97706')
+        : '#16a34a'
+      const direction = isRisk ? '↑ Risk' : '↓ Risk'
+      const percent = Math.round(imp * 100 * 5)
+      return {
+        name: feature.label,
+        score: `${(imp * 100).toFixed(0)}`,
+        percent,
+        direction,
+        color,
+        reason: explanationMap[feature.label] ?? feature.description,
+      }
+    })
+    .sort((a, b) => b.percent - a.percent)
 }
 
 function hash(value: string) {

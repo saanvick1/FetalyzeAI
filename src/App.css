@@ -2076,6 +2076,164 @@
   border-radius: 6px;
 }
 
+/* Headline metrics grid */
+.rn-hl-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+.rn-hl-cell {
+  background: var(--neutral-50);
+  border: 1px solid var(--neutral-200);
+  border-radius: 10px;
+  padding: 14px 12px;
+  text-align: center;
+}
+.rn-hl-cell__label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--neutral-500);
+  margin-bottom: 6px;
+}
+.rn-hl-cell__val {
+  font-size: 1.35rem;
+  font-weight: 800;
+  color: var(--neutral-900);
+  font-variant-numeric: tabular-nums;
+  display: block;
+  margin-bottom: 4px;
+}
+.rn-badge-val--pass { color: #16a34a; }
+.rn-badge-val--warn { color: #d97706; }
+.rn-badge-val--na   { color: var(--neutral-400); }
+.rn-hl-cell__ci {
+  font-size: 0.68rem;
+  color: var(--neutral-500);
+  font-family: ui-monospace, monospace;
+  margin-bottom: 4px;
+}
+.rn-hl-cell__desc {
+  font-size: 0.68rem;
+  color: var(--neutral-400);
+  line-height: 1.4;
+  margin-top: 4px;
+}
+
+/* ROC / PR curves */
+.rn-curves {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+.rn-curve-block { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.rn-curve-block__title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--neutral-700);
+  text-align: center;
+}
+.rn-curve-svg {
+  width: 100%;
+  max-width: 260px;
+  height: auto;
+  border: 1px solid var(--neutral-100);
+  border-radius: 8px;
+  background: #fafafa;
+}
+.rn-curve-stats {
+  display: flex;
+  gap: 16px;
+  font-size: 0.78rem;
+  color: var(--neutral-600);
+}
+.rn-curve-stats strong { color: var(--neutral-900); }
+
+/* Stat mono variant */
+.rn-stat__val--mono {
+  font-family: ui-monospace, monospace;
+  font-size: 0.95rem;
+  color: #38bdf8;
+}
+
+/* CV metrics — 5 cols */
+.rn-cv-metrics {
+  grid-template-columns: repeat(5, 1fr);
+}
+
+/* Confusion matrix wrap */
+.rn-cm-wrap {
+  display: grid;
+  grid-template-columns: 1fr 220px;
+  gap: 20px;
+  align-items: start;
+}
+.rn-cm__cell-count {
+  font-size: 1.1rem;
+  font-weight: 800;
+}
+.rn-cm__cell-pct {
+  font-size: 0.68rem;
+  margin-top: 2px;
+  opacity: 0.75;
+}
+.rn-cm-legend { font-size: 0.8rem; color: var(--neutral-600); }
+.rn-cm-legend__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+.rn-cm-legend__dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.rn-cm-legend__dot--diag { background: #dcfce7; border: 1px solid #86efac; }
+.rn-cm-legend__dot--err  { background: #fee2e2; border: 1px solid #fca5a5; }
+
+/* Per-class pills */
+.rn-class-pill {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.rn-class-pill--normal { background: #dcfce7; color: #166534; }
+.rn-class-pill--watch  { background: #fef3c7; color: #92400e; }
+.rn-class-pill--high   { background: #fee2e2; color: #991b1b; }
+
+/* Table cell status colors */
+.rn-td--good { color: #16a34a; font-weight: 700; }
+.rn-td--warn { color: #d97706; font-weight: 700; }
+.rn-td--bad  { color: #dc2626; font-weight: 700; }
+.rn-td--mono { font-family: ui-monospace, monospace; }
+
+/* Feature importance bar variants */
+.rn-imp-row__bar--blue  { background: #3b82f6; }
+.rn-imp-row__bar--green { background: #22c55e; }
+
+/* Expert row value */
+.rn-exp-row__val {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--neutral-500);
+  text-align: right;
+  min-width: 36px;
+}
+.rn-exp-row {
+  display: grid;
+  grid-template-columns: 110px 1fr 36px;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
 /* Responsive */
 @media (max-width: 900px) {
   .rn-hero { grid-template-columns: 1fr; }
@@ -2083,10 +2241,15 @@
   .rn-dataset-grid { grid-template-columns: repeat(3, 1fr); }
   .rn-gen-grid, .rn-exp-grid { grid-template-columns: 1fr 1fr; }
   .rn-policy-row { grid-template-columns: 1fr; }
+  .rn-hl-grid { grid-template-columns: repeat(3, 1fr); }
+  .rn-curves { grid-template-columns: 1fr; }
+  .rn-cm-wrap { grid-template-columns: 1fr; }
+  .rn-cv-metrics { grid-template-columns: repeat(3, 1fr); }
 }
 @media (max-width: 640px) {
   .rn-metrics-cmp, .rn-cv-metrics { grid-template-columns: repeat(2, 1fr); }
   .rn-gen-grid, .rn-exp-grid { grid-template-columns: 1fr; }
   .rn-dataset-grid { grid-template-columns: repeat(2, 1fr); }
   .rn-imp-row { grid-template-columns: 120px 1fr 40px; }
+  .rn-hl-grid { grid-template-columns: repeat(2, 1fr); }
 }

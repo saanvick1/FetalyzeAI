@@ -1,25 +1,33 @@
+/**
+ * CTG feature definitions — aligned with CTU-CHB/CTU-UHB waveform model (TOPQUA architecture).
+ * These map directly to the signal features extracted by ctg_feature_engine.py.
+ */
+
 export type FeatureKey =
-  | 'baseline_value'
-  | 'accelerations'
-  | 'fetal_movement'
-  | 'uterine_contractions'
-  | 'light_decelerations'
-  | 'severe_decelerations'
-  | 'prolongued_decelerations'
-  | 'abnormal_short_term_variability'
-  | 'mean_value_of_short_term_variability'
-  | 'percentage_of_time_with_abnormal_long_term_variability'
-  | 'mean_value_of_long_term_variability'
-  | 'histogram_width'
-  | 'histogram_min'
-  | 'histogram_max'
-  | 'histogram_number_of_peaks'
-  | 'histogram_number_of_zeroes'
-  | 'histogram_mode'
-  | 'histogram_mean'
-  | 'histogram_median'
-  | 'histogram_variance'
-  | 'histogram_tendency'
+  | 'baseline_fhr'
+  | 'std_fhr'
+  | 'tachycardia_frac'
+  | 'bradycardia_frac'
+  | 'stv'
+  | 'ltv'
+  | 'stv_norm'
+  | 'ltv_norm'
+  | 'n_accels'
+  | 'accels_per_30min'
+  | 'mean_accel_height'
+  | 'n_decels'
+  | 'decels_per_30min'
+  | 'mean_decel_depth'
+  | 'max_decel_depth'
+  | 'mean_decel_dur_s'
+  | 'prolonged_decel_flag'
+  | 'late_decel_likelihood'
+  | 'n_contractions'
+  | 'contractions_per_10min'
+  | 'mean_fhr_drop_post_uc'
+  | 'delayed_recovery_score'
+  | 'signal_quality'
+  | 'duration_min'
 
 export type FeatureValues = Record<FeatureKey, number>
 
@@ -36,183 +44,207 @@ export interface FeatureMeta {
   importance: 'critical' | 'high' | 'medium' | 'low'
 }
 
-export const FEATURE_GROUPS = ['Heart Rate', 'Decelerations', 'Variability', 'Histogram']
+export const FEATURE_GROUPS = ['Heart Rate', 'Decelerations', 'Variability', 'Contractions']
 
 export const FEATURES: FeatureMeta[] = [
-  // Heart Rate
+  // ── Heart Rate ───────────────────────────────────────────────────────────
   {
-    key: 'baseline_value',
+    key: 'baseline_fhr',
     label: 'Baseline FHR',
     unit: 'bpm',
-    description: 'Mean fetal heart rate baseline',
-    min: 100, max: 180, step: 1, defaultValue: 133,
+    description: 'Mean fetal heart rate baseline over full recording',
+    min: 100, max: 180, step: 1, defaultValue: 135,
     group: 'Heart Rate', importance: 'high',
   },
   {
-    key: 'accelerations',
-    label: 'Accelerations',
-    unit: '/sec',
-    description: 'Number of FHR accelerations per second',
-    min: 0, max: 0.02, step: 0.001, defaultValue: 0.003,
+    key: 'std_fhr',
+    label: 'FHR Std Dev',
+    unit: 'bpm',
+    description: 'Standard deviation of the FHR signal — overall variability measure',
+    min: 0, max: 30, step: 0.5, defaultValue: 8,
     group: 'Heart Rate', importance: 'high',
   },
   {
-    key: 'fetal_movement',
-    label: 'Fetal Movement',
-    unit: '/sec',
-    description: 'Number of fetal movements per second',
-    min: 0, max: 0.5, step: 0.001, defaultValue: 0.009,
+    key: 'tachycardia_frac',
+    label: 'Tachycardia Fraction',
+    unit: '%',
+    description: 'Fraction of time FHR exceeds 160 bpm',
+    min: 0, max: 100, step: 1, defaultValue: 2,
     group: 'Heart Rate', importance: 'medium',
   },
   {
-    key: 'uterine_contractions',
-    label: 'Uterine Contractions',
-    unit: '/sec',
-    description: 'Number of uterine contractions per second',
-    min: 0, max: 0.015, step: 0.001, defaultValue: 0.004,
+    key: 'bradycardia_frac',
+    label: 'Bradycardia Fraction',
+    unit: '%',
+    description: 'Fraction of time FHR is below 110 bpm',
+    min: 0, max: 100, step: 1, defaultValue: 1,
     group: 'Heart Rate', importance: 'medium',
   },
 
-  // Decelerations
+  // ── Decelerations ────────────────────────────────────────────────────────
   {
-    key: 'light_decelerations',
-    label: 'Light Decelerations',
-    unit: '/sec',
-    description: 'Number of light FHR decelerations per second',
-    min: 0, max: 0.015, step: 0.001, defaultValue: 0.001,
+    key: 'n_decels',
+    label: 'Deceleration Count',
+    unit: 'count',
+    description: 'Total number of FHR decelerations detected in the recording',
+    min: 0, max: 60, step: 1, defaultValue: 3,
+    group: 'Decelerations', importance: 'critical',
+  },
+  {
+    key: 'decels_per_30min',
+    label: 'Decelerations / 30 min',
+    unit: '/30 min',
+    description: 'Rate of decelerations normalised to 30-minute window',
+    min: 0, max: 30, step: 0.5, defaultValue: 1.5,
+    group: 'Decelerations', importance: 'critical',
+  },
+  {
+    key: 'mean_decel_depth',
+    label: 'Mean Decel Depth',
+    unit: 'bpm',
+    description: 'Average FHR drop below baseline during decelerations',
+    min: 0, max: 80, step: 1, defaultValue: 20,
+    group: 'Decelerations', importance: 'critical',
+  },
+  {
+    key: 'max_decel_depth',
+    label: 'Max Decel Depth',
+    unit: 'bpm',
+    description: 'Maximum FHR drop seen in any single deceleration',
+    min: 0, max: 120, step: 1, defaultValue: 30,
+    group: 'Decelerations', importance: 'critical',
+  },
+  {
+    key: 'mean_decel_dur_s',
+    label: 'Mean Decel Duration',
+    unit: 'sec',
+    description: 'Average duration of decelerations in seconds',
+    min: 0, max: 300, step: 5, defaultValue: 60,
+    group: 'Decelerations', importance: 'high',
+  },
+  {
+    key: 'prolonged_decel_flag',
+    label: 'Prolonged Decel',
+    unit: '0/1',
+    description: 'Flag: 1 if any deceleration lasts ≥ 2 minutes — strongest pathological indicator (FIGO)',
+    min: 0, max: 1, step: 1, defaultValue: 0,
+    group: 'Decelerations', importance: 'critical',
+  },
+  {
+    key: 'late_decel_likelihood',
+    label: 'Late Decel Likelihood',
+    unit: '0–1',
+    description: 'Fraction of contractions followed by a late FHR deceleration (nadir >30s post-UC)',
+    min: 0, max: 1, step: 0.05, defaultValue: 0.05,
+    group: 'Decelerations', importance: 'critical',
+  },
+  {
+    key: 'n_accels',
+    label: 'Acceleration Count',
+    unit: 'count',
+    description: 'Number of FHR accelerations ≥15 bpm lasting ≥15 s — protective reactivity marker',
+    min: 0, max: 50, step: 1, defaultValue: 8,
+    group: 'Decelerations', importance: 'high',
+  },
+  {
+    key: 'accels_per_30min',
+    label: 'Accelerations / 30 min',
+    unit: '/30 min',
+    description: 'Acceleration rate normalised to 30-minute window (≥2 is reassuring)',
+    min: 0, max: 20, step: 0.5, defaultValue: 4,
+    group: 'Decelerations', importance: 'high',
+  },
+  {
+    key: 'mean_accel_height',
+    label: 'Mean Accel Height',
+    unit: 'bpm',
+    description: 'Average peak height of accelerations above baseline',
+    min: 0, max: 60, step: 1, defaultValue: 20,
     group: 'Decelerations', importance: 'medium',
   },
-  {
-    key: 'severe_decelerations',
-    label: 'Severe Decelerations',
-    unit: '/sec',
-    description: 'Number of severe FHR decelerations per second',
-    min: 0, max: 0.001, step: 0.0001, defaultValue: 0,
-    group: 'Decelerations', importance: 'critical',
-  },
-  {
-    key: 'prolongued_decelerations',
-    label: 'Prolonged Decelerations',
-    unit: '/sec',
-    description: 'Number of prolonged decelerations per second — strongest pathological predictor',
-    min: 0, max: 0.005, step: 0.0001, defaultValue: 0,
-    group: 'Decelerations', importance: 'critical',
-  },
 
-  // Variability
+  // ── Variability ──────────────────────────────────────────────────────────
   {
-    key: 'abnormal_short_term_variability',
-    label: 'Abnormal STV',
-    unit: '%',
-    description: 'Percentage of time with abnormal short-term variability',
-    min: 0, max: 100, step: 1, defaultValue: 47,
+    key: 'stv',
+    label: 'Short-Term Variability',
+    unit: 'bpm',
+    description: 'Mean beat-to-beat FHR variation (STV) — key autonomic marker. Normal: 1–4 bpm.',
+    min: 0, max: 10, step: 0.1, defaultValue: 1.5,
     group: 'Variability', importance: 'critical',
   },
   {
-    key: 'mean_value_of_short_term_variability',
-    label: 'Mean STV',
+    key: 'ltv',
+    label: 'Long-Term Variability',
     unit: 'bpm',
-    description: 'Mean value of short-term variability — key autonomic marker',
-    min: 0, max: 8, step: 0.1, defaultValue: 1.3,
-    group: 'Variability', importance: 'critical',
-  },
-  {
-    key: 'percentage_of_time_with_abnormal_long_term_variability',
-    label: 'Abnormal LTV %',
-    unit: '%',
-    description: 'Percentage of time with abnormal long-term variability',
-    min: 0, max: 100, step: 1, defaultValue: 10,
+    description: 'Epoch range analysis of FHR variation (LTV). Normal: 5–25 bpm.',
+    min: 0, max: 55, step: 0.5, defaultValue: 12,
     group: 'Variability', importance: 'high',
   },
   {
-    key: 'mean_value_of_long_term_variability',
-    label: 'Mean LTV',
-    unit: 'bpm',
-    description: 'Mean value of long-term variability',
-    min: 0, max: 55, step: 0.5, defaultValue: 8.2,
+    key: 'stv_norm',
+    label: 'STV Norm (÷10)',
+    unit: '0–1',
+    description: 'Short-term variability normalised to 0–1 scale (STV / 10)',
+    min: 0, max: 1, step: 0.01, defaultValue: 0.15,
     group: 'Variability', importance: 'high',
+  },
+  {
+    key: 'ltv_norm',
+    label: 'LTV Norm (÷25)',
+    unit: '0–1',
+    description: 'Long-term variability normalised to 0–1 scale (LTV / 25)',
+    min: 0, max: 2, step: 0.05, defaultValue: 0.48,
+    group: 'Variability', importance: 'medium',
   },
 
-  // Histogram
+  // ── Contractions ─────────────────────────────────────────────────────────
   {
-    key: 'histogram_width',
-    label: 'Histogram Width',
-    unit: 'bpm',
-    description: 'Width of the FHR histogram (max − min)',
-    min: 0, max: 200, step: 1, defaultValue: 70,
-    group: 'Histogram', importance: 'medium',
-  },
-  {
-    key: 'histogram_min',
-    label: 'Histogram Min',
-    unit: 'bpm',
-    description: 'Minimum value of the FHR histogram',
-    min: 40, max: 170, step: 1, defaultValue: 93,
-    group: 'Histogram', importance: 'low',
-  },
-  {
-    key: 'histogram_max',
-    label: 'Histogram Max',
-    unit: 'bpm',
-    description: 'Maximum value of the FHR histogram',
-    min: 100, max: 250, step: 1, defaultValue: 164,
-    group: 'Histogram', importance: 'low',
-  },
-  {
-    key: 'histogram_number_of_peaks',
-    label: 'Histogram Peaks',
+    key: 'n_contractions',
+    label: 'Contraction Count',
     unit: 'count',
-    description: 'Number of peaks in the FHR histogram',
-    min: 0, max: 20, step: 1, defaultValue: 4,
-    group: 'Histogram', importance: 'low',
+    description: 'Number of uterine contractions detected in the recording',
+    min: 0, max: 80, step: 1, defaultValue: 12,
+    group: 'Contractions', importance: 'medium',
   },
   {
-    key: 'histogram_number_of_zeroes',
-    label: 'Histogram Zeroes',
-    unit: 'count',
-    description: 'Number of zeroes in the FHR histogram',
-    min: 0, max: 12, step: 1, defaultValue: 0,
-    group: 'Histogram', importance: 'low',
+    key: 'contractions_per_10min',
+    label: 'Contractions / 10 min',
+    unit: '/10 min',
+    description: 'Contraction rate (>5/10 min = tachysystole, associated with fetal compromise)',
+    min: 0, max: 10, step: 0.25, defaultValue: 2,
+    group: 'Contractions', importance: 'medium',
   },
   {
-    key: 'histogram_mode',
-    label: 'Histogram Mode',
+    key: 'mean_fhr_drop_post_uc',
+    label: 'FHR Drop Post-UC',
     unit: 'bpm',
-    description: 'Mode of the FHR histogram',
-    min: 50, max: 200, step: 1, defaultValue: 137,
-    group: 'Histogram', importance: 'medium',
+    description: 'Mean FHR drop in the 60 seconds following each uterine contraction',
+    min: 0, max: 50, step: 1, defaultValue: 8,
+    group: 'Contractions', importance: 'high',
   },
   {
-    key: 'histogram_mean',
-    label: 'Histogram Mean',
-    unit: 'bpm',
-    description: 'Mean of the FHR histogram',
-    min: 60, max: 200, step: 1, defaultValue: 134,
-    group: 'Histogram', importance: 'medium',
+    key: 'delayed_recovery_score',
+    label: 'Delayed Recovery',
+    unit: '0–1',
+    description: 'Fraction of contractions where FHR recovery takes >30 s — contraction stress indicator',
+    min: 0, max: 1, step: 0.05, defaultValue: 0.1,
+    group: 'Contractions', importance: 'critical',
   },
   {
-    key: 'histogram_median',
-    label: 'Histogram Median',
-    unit: 'bpm',
-    description: 'Median of the FHR histogram',
-    min: 60, max: 200, step: 1, defaultValue: 138,
-    group: 'Histogram', importance: 'medium',
+    key: 'signal_quality',
+    label: 'Signal Quality',
+    unit: '0–1',
+    description: 'CTG signal quality score (1 = perfect, 0 = unusable — accounts for missing FHR, flatlines, jumps)',
+    min: 0, max: 1, step: 0.05, defaultValue: 0.85,
+    group: 'Contractions', importance: 'medium',
   },
   {
-    key: 'histogram_variance',
-    label: 'Histogram Variance',
-    unit: '',
-    description: 'Variance of the FHR histogram distribution',
-    min: 0, max: 300, step: 1, defaultValue: 19,
-    group: 'Histogram', importance: 'medium',
-  },
-  {
-    key: 'histogram_tendency',
-    label: 'Histogram Tendency',
-    unit: '',
-    description: 'Tendency of the histogram (−1 = left-leaning, 0 = symmetric, 1 = right-leaning)',
-    min: -1, max: 1, step: 1, defaultValue: 0,
-    group: 'Histogram', importance: 'low',
+    key: 'duration_min',
+    label: 'Recording Duration',
+    unit: 'min',
+    description: 'Total intrapartum CTG recording length in minutes',
+    min: 10, max: 180, step: 5, defaultValue: 60,
+    group: 'Contractions', importance: 'low',
   },
 ]
 
@@ -220,48 +252,44 @@ export const DEFAULT_VALUES: FeatureValues = Object.fromEntries(
   FEATURES.map(f => [f.key, f.defaultValue])
 ) as FeatureValues
 
-// Sample presets for demo purposes
 export const PRESETS: { label: string; desc: string; tag: string; values: Partial<FeatureValues> }[] = [
   {
     label: 'Normal CTG',
-    desc: 'Healthy fetal heart rate pattern with good variability and accelerations',
+    desc: 'Healthy intrapartum pattern: normal baseline, good variability, reactive accelerations, no significant decelerations',
     tag: 'Normal',
     values: {
-      baseline_value: 135,
-      accelerations: 0.006,
-      mean_value_of_short_term_variability: 1.8,
-      abnormal_short_term_variability: 22,
-      percentage_of_time_with_abnormal_long_term_variability: 5,
-      prolongued_decelerations: 0,
-      severe_decelerations: 0,
+      baseline_fhr: 135, std_fhr: 9, stv: 2.1, ltv: 14,
+      n_accels: 10, accels_per_30min: 5, mean_accel_height: 22,
+      n_decels: 2, decels_per_30min: 1, mean_decel_depth: 15,
+      max_decel_depth: 20, prolonged_decel_flag: 0, late_decel_likelihood: 0.0,
+      delayed_recovery_score: 0.05, tachycardia_frac: 1, bradycardia_frac: 0,
+      signal_quality: 0.92,
     },
   },
   {
     label: 'Suspect Pattern',
-    desc: 'Reduced variability and absent accelerations — close monitoring warranted',
+    desc: 'Borderline: reduced variability, absent accelerations, some late decelerations — close monitoring warranted',
     tag: 'Suspect',
     values: {
-      baseline_value: 140,
-      accelerations: 0.001,
-      mean_value_of_short_term_variability: 0.8,
-      abnormal_short_term_variability: 55,
-      percentage_of_time_with_abnormal_long_term_variability: 40,
-      prolongued_decelerations: 0.0005,
-      severe_decelerations: 0,
+      baseline_fhr: 142, std_fhr: 5, stv: 0.9, ltv: 6,
+      n_accels: 1, accels_per_30min: 0.5, mean_accel_height: 16,
+      n_decels: 8, decels_per_30min: 4, mean_decel_depth: 28,
+      max_decel_depth: 45, prolonged_decel_flag: 0, late_decel_likelihood: 0.35,
+      delayed_recovery_score: 0.4, tachycardia_frac: 3, bradycardia_frac: 1,
+      signal_quality: 0.80,
     },
   },
   {
     label: 'Pathological CTG',
-    desc: 'Critical pattern: prolonged decelerations, absent variability',
+    desc: 'Critical: prolonged deceleration, absent STV, high late-decel rate — immediate obstetric review required',
     tag: 'Pathological',
     values: {
-      baseline_value: 145,
-      accelerations: 0,
-      mean_value_of_short_term_variability: 0.3,
-      abnormal_short_term_variability: 75,
-      percentage_of_time_with_abnormal_long_term_variability: 70,
-      prolongued_decelerations: 0.002,
-      severe_decelerations: 0.0005,
+      baseline_fhr: 148, std_fhr: 3, stv: 0.3, ltv: 3,
+      n_accels: 0, accels_per_30min: 0, mean_accel_height: 0,
+      n_decels: 18, decels_per_30min: 9, mean_decel_depth: 50,
+      max_decel_depth: 80, prolonged_decel_flag: 1, late_decel_likelihood: 0.75,
+      delayed_recovery_score: 0.8, tachycardia_frac: 8, bradycardia_frac: 5,
+      signal_quality: 0.70,
     },
   },
 ]
