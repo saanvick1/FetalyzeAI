@@ -36,7 +36,8 @@ from sklearn.metrics import (
     roc_auc_score, recall_score, f1_score, balanced_accuracy_score,
     precision_score, average_precision_score, confusion_matrix,
     roc_curve, precision_recall_curve, log_loss as sklearn_log_loss,
-    brier_score_loss, fbeta_score,
+    brier_score_loss, fbeta_score, matthews_corrcoef,
+    accuracy_score,
 )
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import (
@@ -135,6 +136,19 @@ FEATURE_COLS = [
     "figo_absent_variability", "figo_reduced_variability", "figo_absent_accels",
     "figo_late_decels", "figo_prolonged_decel", "figo_sinusoidal",
     "figo_composite_score", "figo_category",
+    # ── Clinical context features from CTU-CHB header metadata ───────────────
+    # These add powerful obstetric context: meconium, preeclampsia, parity,
+    # induction, labor stage duration — all known risk factors for fetal compromise.
+    "gestational_age", "gestational_age_sq", "gestational_weeks_lt37",
+    "birth_weight_kg", "delivery_type_num",
+    "maternal_age", "parity", "nulliparous", "gravidity",
+    "diabetes", "hypertension", "preeclampsia",
+    "liq_praecox", "pyrexia", "meconium", "induced",
+    "i_stage_min", "ii_stage_min", "total_labor_min",
+    "no_progress", "ck_kp", "sig2birth_s",
+    "sex", "rec_type",
+    "is_missing_gest_age", "is_missing_mat_age", "is_missing_meconium",
+    "n_comorbidities",
 ]
 
 
@@ -522,9 +536,23 @@ def main(window_features: bool = False):
     bin_f1    = float(f1_score(yb_all, yb_pred_full, zero_division=0))
     bin_prec  = float(precision_score(yb_all, yb_pred_full, zero_division=0))
     bin_bal   = float(balanced_accuracy_score(yb_all, yb_pred_full))
+    bin_acc   = float(accuracy_score(yb_all, yb_pred_full))
+    _TP = int(np.sum((yb_pred_full == 1) & (yb_all == 1)))
+    _TN = int(np.sum((yb_pred_full == 0) & (yb_all == 0)))
+    _FP = int(np.sum((yb_pred_full == 1) & (yb_all == 0)))
+    _FN = int(np.sum((yb_pred_full == 0) & (yb_all == 1)))
+    bin_npv   = float(_TN / max(_TN + _FN, 1))   # negative predictive value
+    bin_fpr   = float(_FP / max(_FP + _TN, 1))   # false positive rate = 1 - spec
+    bin_fnr   = float(_FN / max(_FN + _TP, 1))   # false negative rate = 1 - sens
+    try:
+        bin_mcc = float(matthews_corrcoef(yb_all, yb_pred_full))
+    except Exception:
+        bin_mcc = float("nan")
+    bin_ppv   = bin_prec                          # positive predictive value = precision
     print(f"[oof-full]  AUROC={bin_auroc:.4f}  AUPRC={bin_auprc:.4f}  "
           f"sens={bin_sens:.4f}  spec={bin_spec:.4f}  F1={bin_f1:.4f}  "
-          f"prec={bin_prec:.4f}  balAcc={bin_bal:.4f}  thr={best_thr_full:.3f}")
+          f"prec={bin_prec:.4f}  balAcc={bin_bal:.4f}  acc={bin_acc:.4f}  "
+          f"MCC={bin_mcc:.4f}  NPV={bin_npv:.4f}  thr={best_thr_full:.3f}")
 
     # Also keep held-out test metrics for transparency
     yb_pred_te = (p_bin_te >= best_thr).astype(int)
@@ -781,6 +809,39 @@ def main(window_features: bool = False):
                 v[0, cols.index(k)] = float(val)
         return scaler.transform(imputer.transform(v))
 
+    # Clinical context helpers for adversarial tests
+    def _clin_low_risk():
+        """Low-risk obstetric context: multiparous, term, no comorbidities, normal labor."""
+        return {
+            "gestational_age": 39.0, "gestational_age_sq": 1521.0, "gestational_weeks_lt37": 0.0,
+            "birth_weight_kg": 3.3, "delivery_type_num": 1.0,
+            "maternal_age": 28.0, "parity": 1.0, "nulliparous": 0.0, "gravidity": 2.0,
+            "diabetes": 0.0, "hypertension": 0.0, "preeclampsia": 0.0,
+            "liq_praecox": 0.0, "pyrexia": 0.0, "meconium": 0.0, "induced": 0.0,
+            "i_stage_min": 260.0, "ii_stage_min": 18.0, "total_labor_min": 278.0,
+            "no_progress": 0.0, "ck_kp": 0.0, "sig2birth_s": 0.0,
+            "sex": 1.0, "rec_type": 1.0,
+            "n_comorbidities": 0.0,
+            "is_missing_gest_age": 0.0, "is_missing_mat_age": 0.0, "is_missing_meconium": 0.0,
+        }
+
+    def _clin_high_risk(**extra):
+        """High-risk obstetric context: nulliparous, meconium, prolonged labor, elevated comorbidities."""
+        base = {
+            "gestational_age": 40.0, "gestational_age_sq": 1600.0, "gestational_weeks_lt37": 0.0,
+            "birth_weight_kg": 3.5, "delivery_type_num": 1.0,
+            "maternal_age": 29.0, "parity": 0.0, "nulliparous": 1.0, "gravidity": 1.0,
+            "diabetes": 0.0, "hypertension": 0.0, "preeclampsia": 0.0,
+            "liq_praecox": 1.0, "pyrexia": 0.0, "meconium": 1.0, "induced": 1.0,
+            "i_stage_min": 440.0, "ii_stage_min": 70.0, "total_labor_min": 510.0,
+            "no_progress": 1.0, "ck_kp": 0.0, "sig2birth_s": 0.0,
+            "sex": 1.0, "rec_type": 1.0,
+            "n_comorbidities": 1.0,
+            "is_missing_gest_age": 0.0, "is_missing_mat_age": 0.0, "is_missing_meconium": 0.0,
+        }
+        base.update(extra)
+        return base
+
     _stress_cases = [
         ("Textbook Normal CTG", 0, {
             "baseline_fhr": 130.0, "mean_fhr": 130.0, "std_fhr": 8.0,
@@ -801,6 +862,7 @@ def main(window_features: bool = False):
             "figo_absent_variability": 0.0, "figo_reduced_variability": 0.0,
             "figo_absent_accels": 0.0, "figo_late_decels": 0.0, "figo_prolonged_decel": 0.0,
             "figo_sinusoidal": 0.0, "figo_composite_score": 0.0, "figo_category": 0.0,
+            **_clin_low_risk(),
         }),
         ("Severe Bradycardia + Absent Variability", 2, {
             "baseline_fhr": 82.0, "mean_fhr": 82.0, "std_fhr": 3.0,
@@ -906,6 +968,17 @@ def main(window_features: bool = False):
             "figo_abnormal_baseline": 1.0, "figo_absent_accels": 0.0,
             "figo_late_decels": 0.0, "figo_prolonged_decel": 0.0, "figo_sinusoidal": 0.0,
             "figo_composite_score": 1.0, "figo_category": 1.0,
+            # Borderline: nulliparous, prolonged first stage, no major comorbidities
+            "gestational_age": 40.0, "gestational_age_sq": 1600.0, "gestational_weeks_lt37": 0.0,
+            "birth_weight_kg": 3.5, "delivery_type_num": 1.0,
+            "maternal_age": 25.0, "parity": 0.0, "nulliparous": 1.0, "gravidity": 1.0,
+            "diabetes": 0.0, "hypertension": 0.0, "preeclampsia": 0.0,
+            "liq_praecox": 0.0, "pyrexia": 0.0, "meconium": 0.0, "induced": 0.0,
+            "i_stage_min": 340.0, "ii_stage_min": 30.0, "total_labor_min": 370.0,
+            "no_progress": 0.0, "ck_kp": 0.0, "sig2birth_s": 0.0,
+            "sex": 1.0, "rec_type": 1.0,
+            "n_comorbidities": 0.0,
+            "is_missing_gest_age": 0.0, "is_missing_mat_age": 0.0, "is_missing_meconium": 0.0,
         }),
         ("Reactive Reassuring CTG", 0, {
             "baseline_fhr": 138.0, "mean_fhr": 139.0, "std_fhr": 9.0,
@@ -926,6 +999,9 @@ def main(window_features: bool = False):
             "figo_absent_variability": 0.0, "figo_reduced_variability": 0.0,
             "figo_absent_accels": 0.0, "figo_late_decels": 0.0, "figo_prolonged_decel": 0.0,
             "figo_sinusoidal": 0.0, "figo_composite_score": 0.0, "figo_category": 0.0,
+            **{**_clin_low_risk(), "parity": 2.0, "nulliparous": 0.0, "gravidity": 3.0,
+               "maternal_age": 31.0, "birth_weight_kg": 3.2,
+               "i_stage_min": 200.0, "ii_stage_min": 14.0, "total_labor_min": 214.0},
         }),
     ]
 
@@ -1253,6 +1329,15 @@ def main(window_features: bool = False):
         "confident_accuracy": uncertainty_coverage["confident_accuracy"],
         "thr_high_risk":    _f4(best_thr_hr),
         "thr_watch":        _f4(best_thr_w),
+        # Comprehensive healthcare evaluation metrics
+        "accuracy":         _f4(bin_acc),
+        "ppv":              _f4(bin_ppv),
+        "npv":              _f4(bin_npv),
+        "false_positive_rate": _f4(bin_fpr),
+        "false_negative_rate": _f4(bin_fnr),
+        "mcc":              _f4(bin_mcc),
+        "tp":               int(_TP), "tn": int(_TN),
+        "fp":               int(_FP), "fn": int(_FN),
     }
 
     xgb_pred_b = (p_xgb_te >= best_thr).astype(int)

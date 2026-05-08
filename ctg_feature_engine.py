@@ -560,6 +560,54 @@ def extract_record_features(record, light: bool = False) -> dict:
     pre["fetal_reserve_score"] = compute_fetal_reserve_score(pre)
     pre.update(compute_figo_flags(pre))
 
+    # ── Clinical context features from CTU-CHB header metadata ───────────────
+    # These powerful predictors (meconium, preeclampsia, parity, labor stage)
+    # are always available regardless of signal mode (light or full).
+    gest = _f_nan(rd.get("gestational_age", np.nan))
+    bwt  = _f_nan(rd.get("birth_weight", np.nan))
+    del_t_raw = rd.get("delivery_type", "unknown")
+    try:
+        del_t_num = float(del_t_raw)
+    except Exception:
+        del_t_num = np.nan
+
+    par  = _f_nan(rd.get("parity", np.nan))
+    pre["gestational_age"]       = gest
+    pre["gestational_age_sq"]    = gest ** 2 if not np.isnan(gest) else np.nan
+    pre["gestational_weeks_lt37"]= float(gest < 37) if not np.isnan(gest) else np.nan
+    pre["birth_weight_kg"]       = bwt / 1000.0 if not np.isnan(bwt) else np.nan
+    pre["delivery_type_num"]     = del_t_num
+    pre["maternal_age"]          = _f_nan(rd.get("maternal_age", np.nan))
+    pre["parity"]                = par
+    pre["nulliparous"]           = float(par == 0.0) if not np.isnan(par) else np.nan
+    pre["gravidity"]             = _f_nan(rd.get("gravidity", np.nan))
+    pre["diabetes"]              = _f_nan(rd.get("diabetes", np.nan))
+    pre["hypertension"]          = _f_nan(rd.get("hypertension", np.nan))
+    pre["preeclampsia"]          = _f_nan(rd.get("preeclampsia", np.nan))
+    pre["liq_praecox"]           = _f_nan(rd.get("liq_praecox", np.nan))
+    pre["pyrexia"]               = _f_nan(rd.get("pyrexia", np.nan))
+    pre["meconium"]              = _f_nan(rd.get("meconium", np.nan))
+    pre["induced"]               = _f_nan(rd.get("induced", np.nan))
+    pre["i_stage_min"]           = _f_nan(rd.get("i_stage_min", np.nan))
+    pre["ii_stage_min"]          = _f_nan(rd.get("ii_stage_min", np.nan))
+    # Combined labor duration indicator
+    i_st = pre["i_stage_min"]
+    ii_st = pre["ii_stage_min"]
+    pre["total_labor_min"]       = (i_st + ii_st) if (not np.isnan(i_st) and not np.isnan(ii_st)) else np.nan
+    pre["no_progress"]           = _f_nan(rd.get("no_progress", np.nan))
+    pre["ck_kp"]                 = _f_nan(rd.get("ck_kp", np.nan))
+    pre["sig2birth_s"]           = _f_nan(rd.get("sig2birth_s", np.nan))
+    pre["sex"]                   = _f_nan(rd.get("sex", np.nan))
+    pre["rec_type"]              = _f_nan(rd.get("rec_type", np.nan))
+    # Missingness indicators for key clinical predictors
+    pre["is_missing_gest_age"]   = float(np.isnan(pre["gestational_age"]))
+    pre["is_missing_mat_age"]    = float(np.isnan(pre["maternal_age"]))
+    pre["is_missing_meconium"]   = float(np.isnan(pre["meconium"]))
+    # Risk composite: any major obstetric risk factor
+    comorbidities = [pre["diabetes"], pre["hypertension"], pre["preeclampsia"],
+                     pre["pyrexia"], pre["liq_praecox"]]
+    pre["n_comorbidities"]       = float(sum(1 for v in comorbidities if not np.isnan(v) and v > 0))
+
     if light:
         pre["record_id"]     = rd["record_id"]
         pre["ph"]            = rd.get("ph", np.nan)
@@ -614,6 +662,14 @@ def extract_record_features(record, light: bool = False) -> dict:
     pre["apgar1"]        = rd.get("apgar1", np.nan)
     pre["apgar5"]        = rd.get("apgar5", np.nan)
     return pre
+
+
+def _f_nan(v):
+    try:
+        f = float(v)
+        return f
+    except Exception:
+        return np.nan
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -727,15 +783,36 @@ def extract_window_features(record, window_minutes: float = 5.0,
     for start in range(0, len(fhr) - win + 1, step):
         end = start + win
         sub = {
-            "record_id":   rd["record_id"],
-            "fhr":         fhr[start:end],
-            "uc":          uc[start:end],
-            "fs":          fs,
-            "ph":          rd.get("ph", np.nan),
-            "base_deficit":rd.get("base_deficit", np.nan),
-            "apgar1":      rd.get("apgar1", np.nan),
-            "apgar5":      rd.get("apgar5", np.nan),
-            "duration_min":(end - start) / (fs * 60),
+            "record_id":    rd["record_id"],
+            "fhr":          fhr[start:end],
+            "uc":           uc[start:end],
+            "fs":           fs,
+            "ph":           rd.get("ph", np.nan),
+            "base_deficit": rd.get("base_deficit", np.nan),
+            "apgar1":       rd.get("apgar1", np.nan),
+            "apgar5":       rd.get("apgar5", np.nan),
+            "duration_min": (end - start) / (fs * 60),
+            # pass through clinical metadata so window features include them
+            "gestational_age": rd.get("gestational_age", np.nan),
+            "birth_weight":    rd.get("birth_weight", np.nan),
+            "delivery_type":   rd.get("delivery_type", "unknown"),
+            "maternal_age":    rd.get("maternal_age", np.nan),
+            "parity":          rd.get("parity", np.nan),
+            "gravidity":       rd.get("gravidity", np.nan),
+            "diabetes":        rd.get("diabetes", np.nan),
+            "hypertension":    rd.get("hypertension", np.nan),
+            "preeclampsia":    rd.get("preeclampsia", np.nan),
+            "liq_praecox":     rd.get("liq_praecox", np.nan),
+            "pyrexia":         rd.get("pyrexia", np.nan),
+            "meconium":        rd.get("meconium", np.nan),
+            "induced":         rd.get("induced", np.nan),
+            "i_stage_min":     rd.get("i_stage_min", np.nan),
+            "ii_stage_min":    rd.get("ii_stage_min", np.nan),
+            "no_progress":     rd.get("no_progress", np.nan),
+            "ck_kp":           rd.get("ck_kp", np.nan),
+            "sig2birth_s":     rd.get("sig2birth_s", np.nan),
+            "sex":             rd.get("sex", np.nan),
+            "rec_type":        rd.get("rec_type", np.nan),
         }
 
         class _W:

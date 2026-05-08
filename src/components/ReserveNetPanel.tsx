@@ -10,7 +10,7 @@ function fmt(v: number | null | undefined, dp = 3) {
   if (v == null) return '—'
   return Number(v).toFixed(dp)
 }
-function badge(v: number | null | undefined, threshold = 0.89, invert = false) {
+function badge(v: number | null | undefined, threshold = 0.90, invert = false) {
   if (v == null) return 'rn-badge-val--na'
   const pass = invert ? v < threshold : v >= threshold
   return pass ? 'rn-badge-val--pass' : 'rn-badge-val--warn'
@@ -175,6 +175,114 @@ export function ReserveNetPanel() {
           <strong>Missing values (—):</strong> ECE, Brier score, and uncertainty coverage are computed
           by the Python training pipeline. Run <code>python train_adaptive.py</code> to populate them.
           All other values come from the current <code>ctu_reservenet_results.json</code>.
+        </div>
+      </section>
+
+      {/* ── Full Healthcare Evaluation Suite ─────────────────────────────── */}
+      <section className="rn-card">
+        <h3 className="rn-card__title">Full Healthcare Evaluation Suite — All Standard ML Metrics</h3>
+        <p className="rn-note" style={{ marginBottom: 16 }}>
+          Complete classification performance profile using OOF (out-of-fold) predictions over all
+          labeled CTU-CHB records. Covers every standard metric from accuracy through MCC —
+          with confusion matrix counts for full transparency. All computed at the Youden-optimal threshold.
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: 12, marginBottom: 16 }}>
+          {[
+            { label: 'Accuracy',            val: ens.accuracy,             thr: 0.80, inv: false, fmt: 'pct', desc: 'Overall fraction of correct binary predictions' },
+            { label: 'Sensitivity (Recall)', val: SENS,                    thr: 0.80, inv: false, fmt: 'pct', desc: 'At-risk cases correctly detected (TPR)' },
+            { label: 'Specificity',          val: SPEC,                    thr: 0.80, inv: false, fmt: 'pct', desc: 'Normal cases correctly identified (TNR)' },
+            { label: 'PPV (Precision)',       val: ens.ppv ?? PREC,         thr: 0.50, inv: false, fmt: 'pct', desc: 'Positive predictive value — when model says at-risk, how often is it right?' },
+            { label: 'NPV',                  val: ens.npv,                 thr: 0.85, inv: false, fmt: 'pct', desc: 'Negative predictive value — when model says normal, how often is it right?' },
+            { label: 'F1 Score (binary)',     val: F1,                      thr: 0.50, inv: false, fmt: 'pct', desc: 'Harmonic mean of PPV and sensitivity' },
+            { label: 'AUROC',                val: AUROC,                   thr: 0.75, inv: false, fmt: 'num', desc: 'Area under ROC — discrimination power (0.5=random, 1.0=perfect)' },
+            { label: 'AUPRC',                val: AUPRC,                   thr: 0.40, inv: false, fmt: 'num', desc: 'Area under precision-recall curve — better than AUROC for imbalanced classes' },
+            { label: 'Balanced Accuracy',    val: ens.balanced_accuracy,   thr: 0.70, inv: false, fmt: 'pct', desc: '(Sensitivity + Specificity) / 2 — corrects for class imbalance' },
+            { label: 'MCC',                  val: ens.mcc,                 thr: 0.40, inv: false, fmt: 'num', desc: 'Matthews Correlation Coefficient — single summary for imbalanced datasets (-1 to +1)' },
+            { label: 'False Positive Rate',  val: ens.false_positive_rate, thr: 0.20, inv: true,  fmt: 'pct', desc: 'Normal cases incorrectly flagged as at-risk (false alarms). Lower = fewer unnecessary interventions.' },
+            { label: 'False Negative Rate',  val: ens.false_negative_rate, thr: 0.20, inv: true,  fmt: 'pct', desc: 'At-risk cases missed entirely — the most dangerous error type. Lower = safer.' },
+            { label: 'ECE',                  val: ECE_VAL,                 thr: 0.10, inv: true,  fmt: 'num', desc: 'Expected calibration error — probability accuracy. < 0.05 = excellent.' },
+            { label: 'Brier Score',          val: BRIER_VAL,               thr: 0.15, inv: true,  fmt: 'num', desc: 'Mean squared probability error — perfect = 0, baseline ≈ 0.15' },
+          ].map(({ label, val, thr, inv, fmt: fmtType, desc }) => (
+            <div key={label} className="rn-hl-cell">
+              <div className="rn-hl-cell__label" style={{ fontSize: 11 }}>{label}</div>
+              <div className={`rn-hl-cell__val ${badge(val as number, thr, inv)}`} style={{ fontSize: 20 }}>
+                {val != null
+                  ? fmtType === 'pct' ? pct(val as number) : fmt(val as number, 3)
+                  : '—'}
+              </div>
+              <div className="rn-hl-cell__desc" style={{ fontSize: 10 }}>{desc}</div>
+            </div>
+          ))}
+        </div>
+        {/* Confusion matrix counts */}
+        {(ens.tp != null || ens.tn != null) && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: '#374151' }}>
+              Confusion Matrix — Binary (at-risk vs normal) OOF predictions
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, maxWidth: 320 }}>
+              {[
+                { label: 'True Positives (TP)', val: ens.tp, color: '#16a34a', desc: 'At-risk correctly flagged' },
+                { label: 'False Positives (FP)', val: ens.fp, color: '#f59e0b', desc: 'Normal incorrectly flagged' },
+                { label: 'False Negatives (FN)', val: ens.fn, color: '#ef4444', desc: 'At-risk missed — most dangerous' },
+                { label: 'True Negatives (TN)', val: ens.tn, color: '#3b82f6', desc: 'Normal correctly cleared' },
+              ].map(({ label, val, color, desc }) => (
+                <div key={label} style={{ background: '#f9fafb', border: `2px solid ${color}20`, borderRadius: 8, padding: '10px 14px' }}>
+                  <div style={{ fontSize: 22, fontWeight: 700, color }}>{val ?? '—'}</div>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: '#374151' }}>{label}</div>
+                  <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>{desc}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* ── Clinical Context Features ─────────────────────────────────────── */}
+      <section className="rn-card">
+        <h3 className="rn-card__title">Clinical Context Features — CTU-CHB Obstetric Metadata</h3>
+        <p className="rn-note" style={{ marginBottom: 14 }}>
+          Beyond raw CTG waveform analysis, the model leverages{' '}
+          <strong>28 clinical context features</strong> extracted from CTU-CHB header metadata.
+          These obstetric predictors encode established risk factors for fetal compromise —
+          meconium, preeclampsia, labor stage duration, nulliparity, and induction are among the most
+          predictive in published obstetric literature.
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10, marginBottom: 14 }}>
+          {[
+            { icon: '🟡', name: 'Meconium in Liquor', desc: 'Fetal bowel movement in amniotic fluid — major risk indicator for fetal distress', cat: 'Acute Risk' },
+            { icon: '🔴', name: 'Preeclampsia', desc: 'Maternal hypertensive disorder — elevated fetal hypoxia risk', cat: 'Maternal Condition' },
+            { icon: '🔴', name: 'Hypertension', desc: 'Maternal hypertension — associated with reduced uteroplacental perfusion', cat: 'Maternal Condition' },
+            { icon: '🟡', name: 'Liq. Praecox (PROM)', desc: 'Premature rupture of membranes — cord compression and infection risk', cat: 'Acute Risk' },
+            { icon: '🟡', name: 'Pyrexia / Fever', desc: 'Maternal fever — chorioamnionitis marker, increases fetal metabolic demand', cat: 'Acute Risk' },
+            { icon: '🟠', name: 'Nulliparous (Parity=0)', desc: 'First-time mothers have higher rates of prolonged labor and fetal compromise', cat: 'Obstetric History' },
+            { icon: '🟠', name: 'Induced Labor', desc: 'Oxytocin-induced labor associated with different contraction patterns and outcomes', cat: 'Labor Management' },
+            { icon: '🟠', name: 'First Stage Duration', desc: 'Prolonged first stage correlates with maternal exhaustion and fetal hypoxia', cat: 'Labor Progress' },
+            { icon: '🟠', name: 'Second Stage Duration', desc: 'Prolonged second stage is a key indicator of delivery difficulty and distress risk', cat: 'Labor Progress' },
+            { icon: '🟡', name: 'No Progress (Arrest)', desc: 'Labor arrest — associated with surgical delivery and fetal compromise', cat: 'Labor Progress' },
+            { icon: '🔵', name: 'Gestational Age (weeks)', desc: 'Preterm gestates carry higher risk; quadratic term captures U-shaped relationship', cat: 'Baseline' },
+            { icon: '🔵', name: 'Birth Weight (kg)', desc: 'Fetal size affects labor difficulty and outcome risk', cat: 'Baseline' },
+            { icon: '🔵', name: 'Maternal Age', desc: 'Advanced maternal age associated with higher risk complications', cat: 'Baseline' },
+            { icon: '🔵', name: 'Delivery Type', desc: 'Vaginal / instrumental / caesarean — reflects difficulty of delivery', cat: 'Labor Management' },
+            { icon: '🔵', name: 'Gravidity', desc: 'Total number of pregnancies — relevant context for risk stratification', cat: 'Obstetric History' },
+            { icon: '🔵', name: 'Diabetes', desc: 'Gestational or pre-existing diabetes — associated with macrosomia and placental dysfunction', cat: 'Maternal Condition' },
+            { icon: '🔵', name: 'Comorbidity Count', desc: 'Composite count of active risk factors (diabetes, hypertension, preeclampsia, pyrexia, PROM)', cat: 'Composite' },
+            { icon: '🔵', name: 'Sig-to-Birth (seconds)', desc: 'Time from CTG signal end to delivery — timing context for intrapartum interpretation', cat: 'Timing' },
+          ].map(({ icon, name, desc, cat }) => (
+            <div key={name} style={{ background: '#f9fafb', borderRadius: 8, padding: '10px 12px', border: '1px solid #e5e7eb' }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: '#111827', marginBottom: 2 }}>
+                {icon} {name}
+              </div>
+              <div style={{ fontSize: 10, color: '#2563eb', fontWeight: 600, marginBottom: 4 }}>{cat}</div>
+              <div style={{ fontSize: 10, color: '#6b7280', lineHeight: 1.4 }}>{desc}</div>
+            </div>
+          ))}
+        </div>
+        <div className="rn-note rn-note--clinical">
+          <strong>Feature count:</strong> 57 CTG waveform features + 11 FIGO 2015 guideline binary flags
+          + 28 clinical context features = <strong>{(R.n_features ?? '—')} total features</strong> per record.
+          All clinical features use median imputation for missing values (RobustScaler normalised).
+          Missingness indicators are included as explicit binary features for transparency.
         </div>
       </section>
 
@@ -1175,6 +1283,7 @@ export function ReserveNetPanel() {
             { icon: '📊', title: 'Bootstrap CIs (100 iter)', body: '100 stratified bootstrap resamplings of the OOF pool quantify uncertainty in all reported binary metrics — wide CIs flag small test size.' },
             { icon: '❌', title: 'No synthetic fallback allowed', body: 'Training crashes with RuntimeError if real CTU-CHB data is unavailable. fetal_health.csv, UCI, Kaggle, and synthetic data are permanently excluded.' },
             { icon: '🏥', title: 'FIGO 2015 guidelines as features', body: '11 binary FIGO guideline flags (abnormal baseline, absent variability, sinusoidal, late decels, etc.) encode decades of expert obstetric knowledge directly in the feature space.' },
+            { icon: '🩺', title: 'Clinical context features (28 new)', body: '28 obstetric metadata features from CTU-CHB headers: meconium, preeclampsia, parity, nulliparous flag, labor stage duration, induction, pyrexia, PROM and more — all strong evidence-based risk factors for fetal compromise.' },
             { icon: '🔍', title: 'OOD detection (IsolationForest)', body: 'IsolationForest fit on training features flags test records whose CTG profile lies outside the training distribution — these cases get elevated uncertainty.' },
             { icon: '⚡', title: 'Adversarial clinical stress tests', body: '7 canonical CTG profiles (textbook normal, bradycardia, sinusoidal, late decels, etc.) verified post-training. Pass rate measures clinical face validity.' },
             { icon: '⚖️', title: 'F2-optimised 3-class threshold', body: 'High-risk and watch thresholds optimised for F2-macro (β=2) — recall weighted 4× over precision to reflect the asymmetric cost of missing a distressed fetus.' },

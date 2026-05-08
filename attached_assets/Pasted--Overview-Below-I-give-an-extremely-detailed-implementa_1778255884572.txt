@@ -1,0 +1,254 @@
+### Overview
+Below I give an **extremely detailed, implementation‑ready** plan to add clinical context, guideline knowledge, temporal awareness, uncertainty, OOD detection, adversarial evaluation, training/evaluation changes, and clinician‑facing outputs to your FetalyzeAI pipeline. I reference the improvements already planned in your FetalyzeAI project where relevant.   [Current page](citation-section://2039068526/4)  [Current page](citation-section://2039068526/18)
+
+---
+
+### 1. Structured Clinical Context Features — data, schema, preprocessing, and model branch
+#### Data schema and storage
+- **Create a single canonical clinical context record** per CTG session with these fields and types:
+  - **patient_id**: string  
+  - **record_id**: string  
+  - **gestational_age_weeks**: integer  
+  - **parity**: categorical {nulliparous, multiparous, unknown}  
+  - **maternal_age_years**: integer  
+  - **comorbidities_flags**: bitmask or separate booleans for {preeclampsia, chronic_hypertension, gestational_diabetes, IUGR, prior_c_section}  
+  - **labor_stage**: categorical {antenatal, latent, active_first_stage, second_stage, postpartum}  
+  - **oxytocin_use**: categorical {none, low, medium, high, unknown}  
+  - **epidural**: boolean  
+  - **rupture_of_membranes_hours**: float (hours since ROM)  
+  - **multiple_pregnancy**: boolean  
+  - **meconium**: categorical {none, thin, thick, unknown}  
+  - **signal_quality_score**: float [0,1] (computed separately)  
+  - **timestamp_series**: ISO timestamps for dynamic fields (see temporal section)
+
+Store as a compact JSON or Parquet row per record. Use consistent missing‑value encodings (e.g., `null` or sentinel -1) and a schema registry.
+
+#### Preprocessing and encoding
+- **Numerical features**: standardize using training set mean/std; persist scalers. For gestational age, consider both raw weeks and a quadratic term (weeks and weeks\(^2\)) to capture nonlinearity.
+- **Categorical features**: use learned embeddings for high-cardinality (e.g., parity, oxytocin dose category) and one‑hot for low-cardinality booleans.
+- **Comorbidity bitmask**: keep as binary vector; feed into MLP.
+- **Missingness indicators**: for every clinical field, add a binary flag `is_missing_X`. Missingness itself is predictive in clinical data.
+- **Signal quality**: compute a continuous score (0–1) and also bucket into tertiles (poor/medium/good) for subgroup analysis. Persist thresholds used during training.
+
+#### Model architecture integration
+- **Clinical encoder**: small MLP with residual connections:
+```python
+class ClinicalEncoder(nn.Module):
+    def __init__(self, num_numeric, cat_embed_dims):
+        super().__init__()
+        self.embeds = nn.ModuleList([nn.Embedding(n, d) for n,d in cat_embed_dims])
+        self.fc1 = nn.Linear(num_numeric + sum(d for _,d in cat_embed_dims) + num_binary, 128)
+        self.bn1 = nn.BatchNorm1d(128)
+        self.fc2 = nn.Linear(128, 64)
+    def forward(self, numeric, cat_idxs, binary):
+        x = [emb(cat_idxs[:,i]) for i,emb in enumerate(self.embeds)]
+        x = torch.cat([numeric, torch.cat(x,dim=1), binary], dim=1)
+        x = F.relu(self.bn1(self.fc1(x)))
+        return F.relu(self.fc2(x))
+```
+- **Fusion**: concatenate `ctg_repr` (from your CTG encoder) and `clinical_repr` and pass to classifier head. Use layer normalization and dropout before final layers.
+
+#### Training tips
+- **Balanced minibatches**: ensure each batch contains a mix of gestational ages and signal quality strata to avoid bias.
+- **Feature ablation during training**: randomly mask some clinical features (simulate missingness) so the model learns to be robust to incomplete context.
+
+---
+
+### 2. Encode Guideline Knowledge as Deterministic and Soft Features
+#### Deterministic FIGO/NICHD features
+Implement a **feature engine** that computes FIGO-like features from raw CTG traces. For each record compute:
+- **baseline_fhr**: median FHR over baseline window (algorithm: robust median after removing decelerations/accelerations using thresholding).  
+- **variability_ms**: short-term variability estimate (e.g., SD of beat-to-beat or 1s window).  
+- **variability_category**: {reduced, normal, increased} using clinically validated cutoffs.  
+- **acceleration_count**: count of accelerations in last 10 min.  
+- **late_decel_count**: count of late decelerations (onset after contraction peak) in last 30 min.  
+- **variable_decel_count**: count of variable decelerations.  
+- **prolonged_decel_flag**: boolean for decels > 2 min.  
+- **contraction_rate_per_10min**: computed from toco or uterine activity channel.  
+- **sinusoidal_pattern_flag**: boolean using spectral/shape matching.  
+- **FIGO_category_estimate**: map rules to category 1/2/3.
+
+Implement these as **deterministic functions** in the feature extraction pipeline (e.g., `extract_figo_features(raw_ctg)`), unit test them against textbook examples, and persist outputs.
+
+Cite that adding FIGO features was part of your planned improvements.   [Current page](citation-section://2039068526/4)
+
+#### Soft constraints and loss penalties
+- **Rule‑aware regularizer**: add a penalty term to the loss when model predictions contradict strong guideline signals. Example:
+  - If `FIGO_category_estimate == 3` and model predicts `normal` with probability > 0.6, add penalty \(\lambda \cdot \text{BCE}(\hat{p}_{normal}, 1)\). Tune \(\lambda\) small (0.1–1.0) to avoid overpowering data.
+- **Auxiliary heads**: add auxiliary outputs that predict FIGO features from the fused embedding (multi-task). This forces the model to encode guideline concepts internally:
+```python
+loss = main_loss + alpha * sum(aux_losses)
+```
+Set `alpha` via validation.
+
+---
+
+### 3. Temporal and Workflow Awareness
+#### Data representation
+- **Sliding windows**: represent each record as a sequence of windows (e.g., 5‑minute windows with 1‑minute stride) covering the last 60 minutes. Each window has CTG features + snapshot clinical context (some clinical fields are static; others like oxytocin dose can be time-varying).
+- **Timestamps**: keep absolute timestamps for each window to allow time‑aware positional encoding.
+
+#### Model choices
+- **Temporal encoder options**:
+  - **Temporal CNN**: 1D convs across windows for efficiency.
+  - **Transformer encoder**: use relative positional encodings; good for long-range dependencies.
+  - **Bi‑directional LSTM**: simpler, lower compute.
+- **Recommended**: Transformer encoder with small depth (2–4 layers) and attention heads (4–8) for interpretability of which windows drive decisions.
+
+#### Implementation sketch
+```python
+# per-window: ctg_window_features -> ctg_window_repr (CNN/MLP)
+# clinical per-window -> clinical_window_repr
+sequence = torch.cat([ctg_window_repr, clinical_window_repr], dim=-1)  # shape (B, T, D)
+sequence = sequence + time_positional_encoding(timestamps)
+transformer_out = TransformerEncoder(sequence)  # (B, T, D)
+pooled = attention_pool(transformer_out)  # weighted sum across time
+logits = classifier_head(pooled)
+```
+- **Attention pooling**: compute attention weights across time windows and expose them in UI as “which minutes mattered”.
+
+#### Decision framing
+- **Predict both**:
+  - **Immediate escalation risk** (binary within next 10–15 minutes).  
+  - **Trajectory score** (slope of risk over next 30–60 minutes).  
+Train with labels derived from objective outcomes (see section 5).
+
+---
+
+### 4. Uncertainty, OOD Detection, and Human‑in‑the‑Loop
+#### Uncertainty estimation
+- **Ensembles**: train 5–10 model seeds (same architecture, different initializations) and average predictions; use variance across ensemble as epistemic uncertainty.
+- **MC Dropout**: enable dropout at inference and run \(N\) forward passes (e.g., \(N=30\)) to estimate predictive distribution.
+- **Calibration**: apply temperature scaling on validation set to calibrate probabilities.
+
+**Output**: return `p_compromise`, `epistemic_uncertainty` (ensemble variance), `aleatoric_uncertainty` (predictive entropy), and `calibrated_probability`.
+
+#### OOD detection
+- **Feature-space OOD detector**: train an IsolationForest or OneClassSVM on fused embeddings from training data. At inference, compute OOD score and threshold to flag records that are out-of-distribution.
+- **Mahalanobis distance**: compute Mahalanobis distance in embedding space to class centroids; high distance → OOD.
+- **Signal-quality OOD**: if `signal_quality_score < threshold`, mark as low‑confidence regardless of model output.
+
+Cite that OOD detection and flagging were part of your robustness plan.   [Current page](citation-section://2039068526/4)
+
+#### Human-in-the-loop rules
+- **Triage policy**:
+  - If `p_compromise > 0.7` and `uncertainty low` → show high‑priority alert.
+  - If `uncertainty high` or `OOD_flag == true` → show “requires clinician review” and **do not** auto‑escalate.
+- **Explainability**:
+  - Provide top 3 contributing features (SHAP or integrated gradients) and top 2 time windows (from attention weights).
+  - Provide deterministic FIGO features alongside model drivers.
+
+---
+
+### 5. Training, Labeling, and Evaluation Strategy
+#### Labels and outcomes
+- **Prefer objective outcomes**: umbilical artery pH < 7.05, base deficit, 5‑minute Apgar < 7, NICU admission for respiratory or neurologic reasons. Create composite endpoints for “clinically meaningful compromise”.
+- **Label windows**: map outcomes back to time windows (e.g., label a window positive if compromise occurs within 60 minutes after that window).
+
+#### Losses and class imbalance
+- **Loss function**: focal loss or weighted BCE to prioritize recall for compromise class. For clinical safety, tune for high sensitivity while controlling false alarms per hour.
+- **Metric optimization**: use F\(_\beta\) with \(\beta=2\) (emphasize recall) for threshold selection, as you planned.   [Current page](citation-section://2039068526/4)
+- **Resampling**: use stratified oversampling (SMOTE for tabular FIGO features) but avoid synthetic signal generation for raw traces unless validated.
+
+#### Cross‑validation and external validation
+- **Temporal split**: train on earlier time periods, validate on later periods to simulate deployment drift.
+- **Site split**: if multi‑center data available, hold out entire hospitals for external validation.
+- **Metrics to report**:
+  - Sensitivity (recall) for compromise.
+  - False alarms per hour (FA/hr).
+  - Precision, AUROC, AUPRC.
+  - Calibration plots and Brier score.
+  - Coverage vs. accuracy for uncertainty thresholds (what fraction of cases are flagged as OOD/uncertain and how many of those contain true positives).
+
+#### Adversarial and stress testing
+- **Canonical adversarial cases**: implement a test suite of textbook patterns (normal, bradycardia, sinusoidal, recurrent late decels, prolonged decels, variable decels with cord prolapse) and ensure model outputs align with expected risk. Automate pass/fail.   [Current page](citation-section://2039068526/4)  [Current page](citation-section://2039068526/18)
+- **Synthetic perturbations**: add noise, drop channels, shift baseline, and test robustness.
+- **Subgroup analysis**: evaluate performance by gestational age bins, parity, signal quality tertiles, and comorbidity groups. Report disparities.
+
+---
+
+### 6. Deployment, UI, and Clinician‑Facing Outputs
+#### JSON output schema for UI
+Return a structured JSON per record:
+```json
+{
+  "record_id": "...",
+  "p_compromise": 0.78,
+  "calibrated_probability": 0.72,
+  "uncertainty": {
+    "epistemic": 0.12,
+    "aleatoric": 0.08,
+    "ood_flag": false,
+    "signal_quality": 0.34
+  },
+  "top_drivers": [
+    {"feature":"late_decel_count","contribution":0.32},
+    {"feature":"reduced_variability","contribution":0.21},
+    {"feature":"preeclampsia","contribution":0.12}
+  ],
+  "attention_windows": [
+    {"start":"2026-05-08T11:00:00","end":"2026-05-08T11:05:00","weight":0.45},
+    {"start":"2026-05-08T10:50:00","end":"2026-05-08T10:55:00","weight":0.21}
+  ],
+  "figo_features": {
+    "baseline_fhr": 150,
+    "variability_category": "reduced",
+    "late_decel_count": 3
+  },
+  "recommendation": {
+    "level":"urgent_review",
+    "text":"High estimated risk in context of reduced variability and recurrent late decelerations. Recommend senior review within 10 minutes."
+  }
+}
+```
+Cite that richer JSON and UI changes were planned.   [Current page](citation-section://2039068526/7)  [Current page](citation-section://2039068526/4)
+
+#### UI design principles
+- **Never show raw label only**: always show probability + uncertainty + drivers + FIGO features.
+- **Actionable phrasing**: map model outputs to suggested actions (monitor, senior review, prepare for delivery) with explicit time windows.
+- **Audit trail**: log model version, weights, and inputs used for each prediction for medico‑legal traceability.
+
+#### Runtime safeguards
+- **Fail‑safe**: if OOD or signal quality poor, do not auto‑escalate; require clinician confirmation.
+- **Rate limiting**: avoid repeated alerts for the same patient within short windows; implement hysteresis (e.g., only escalate if high risk persists across 2 consecutive windows).
+- **Monitoring**: collect post‑deployment metrics (alert acceptance rate, clinician overrides, outcome drift) and schedule periodic re‑training.
+
+---
+
+### 7. Concrete Implementation Roadmap and Checklist
+1. **Feature engine**: implement FIGO deterministic extractor; unit tests with textbook cases.   [Current page](citation-section://2039068526/4)  
+2. **Clinical schema**: finalize schema, implement ETL to join clinical context to CTG traces.  
+3. **Model refactor**: add ClinicalEncoder, temporal encoder, fusion head. Add auxiliary FIGO prediction heads.  
+4. **Uncertainty & OOD**: implement ensemble + IsolationForest OOD on embeddings.  
+5. **Training pipeline**: implement temporal/temporal-split CV, F\(_2\) threshold tuning, calibration step.  
+6. **Adversarial suite**: build canonical test vectors and automated pass/fail.   [Current page](citation-section://2039068526/18)  
+7. **UI contract**: implement JSON schema and ReserveNetPanel UI changes to display probability, uncertainty, drivers, and FIGO features.   [Current page](citation-section://2039068526/7)  
+8. **Validation**: run external site/time validation and subgroup fairness analysis.  
+9. **Deployment**: add runtime OOD checks, logging, and clinician override workflow.
+
+---
+
+### Quick code snippets and utilities
+- **FIGO feature extractor skeleton**
+```python
+def compute_baseline_fhr(fhr_signal, fs=4):
+    # remove decels/accels via median filter and thresholding
+    baseline = robust_median(fhr_signal, kernel=int(60*fs))
+    return baseline
+```
+- **OOD detector training**
+```python
+from sklearn.ensemble import IsolationForest
+embeddings = get_fused_embeddings(train_records)
+iso = IsolationForest(contamination=0.02).fit(embeddings)
+ood_score = -iso.decision_function(embedding)  # higher = more OOD
+```
+
+---
+
+### Final notes and next steps
+- Prioritize **unit tests** for deterministic FIGO features and the adversarial suite before retraining.  
+- Use **small pilot deployment** with clinician feedback and logging to iterate UI phrasing and thresholds.  
+- If you want, I can now: (a) generate the exact JSON schema and TypeScript interfaces for ReserveNetPanel changes, (b) write the FIGO extractor functions with test vectors, or (c) produce a training config (hyperparameters, batch sizes, ensemble count) tuned for your current compute budget.
+
+If you want me to produce any of those artifacts, tell me which one and I’ll generate the code and tests next.

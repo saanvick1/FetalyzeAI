@@ -59,6 +59,25 @@ class CTURecord:
     gestational_age:  float                = float("nan")
     birth_weight:     float                = float("nan")
     delivery_type:    str                  = "unknown"
+    # Rich clinical context metadata from CTU-CHB header
+    maternal_age:     float                = float("nan")
+    parity:           float                = float("nan")
+    gravidity:        float                = float("nan")
+    diabetes:         float                = float("nan")
+    hypertension:     float                = float("nan")
+    preeclampsia:     float                = float("nan")
+    liq_praecox:      float                = float("nan")
+    pyrexia:          float                = float("nan")
+    meconium:         float                = float("nan")
+    presentation:     float                = float("nan")
+    induced:          float                = float("nan")
+    i_stage_min:      float                = float("nan")
+    ii_stage_min:     float                = float("nan")
+    no_progress:      float                = float("nan")
+    ck_kp:            float                = float("nan")
+    sig2birth_s:      float                = float("nan")
+    sex:              float                = float("nan")
+    rec_type:         float                = float("nan")
 
     def as_dict(self) -> dict:
         d = asdict(self)
@@ -117,6 +136,25 @@ _HEADER_KEYS = [
     ("Gest. weeks",   "gestational_age"),
     ("Weight(g)",     "birth_weight"),
     ("Deliv. type",   "delivery_type"),
+    # Rich clinical context fields from CTU-CHB .hea comments
+    ("Age",           "maternal_age"),
+    ("Parity",        "parity"),
+    ("Gravidity",     "gravidity"),
+    ("Diabetes",      "diabetes"),
+    ("Hypertension",  "hypertension"),
+    ("Preeclampsia",  "preeclampsia"),
+    ("Liq. praecox",  "liq_praecox"),
+    ("Pyrexia",       "pyrexia"),
+    ("Meconium",      "meconium"),
+    ("Presentation",  "presentation"),
+    ("Induced",       "induced"),
+    ("II.stage",      "ii_stage_min"),
+    ("I.stage",       "i_stage_min"),
+    ("NoProgress",    "no_progress"),
+    ("CK/KP",         "ck_kp"),
+    ("Sig2Birth",     "sig2birth_s"),
+    ("Sex",           "sex"),
+    ("Rec. type",     "rec_type"),
 ]
 
 
@@ -198,6 +236,11 @@ def load_ctu_records(max_records: Optional[int] = None,
             signal_quality = float(1.0 - missing_pct / 100)
             total_signal_seconds += len(fhr) / FS
 
+            def _mf(key):
+                v = meta.get(key, float("nan"))
+                try:   return float(v)
+                except Exception: return float("nan")
+
             records.append(CTURecord(
                 record_id        = rid,
                 fhr              = fhr,
@@ -206,13 +249,31 @@ def load_ctu_records(max_records: Optional[int] = None,
                 duration_min     = duration_min,
                 signal_quality   = signal_quality,
                 missingness_pct  = missing_pct,
-                ph               = float(meta.get("ph", np.nan)),
-                base_deficit     = float(meta.get("base_deficit", np.nan)),
-                apgar1           = float(meta.get("apgar1", np.nan)),
-                apgar5           = float(meta.get("apgar5", np.nan)),
-                gestational_age  = float(meta.get("gestational_age", np.nan)),
-                birth_weight     = float(meta.get("birth_weight", np.nan)),
+                ph               = _mf("ph"),
+                base_deficit     = _mf("base_deficit"),
+                apgar1           = _mf("apgar1"),
+                apgar5           = _mf("apgar5"),
+                gestational_age  = _mf("gestational_age"),
+                birth_weight     = _mf("birth_weight"),
                 delivery_type    = str(meta.get("delivery_type", "unknown")),
+                maternal_age     = _mf("maternal_age"),
+                parity           = _mf("parity"),
+                gravidity        = _mf("gravidity"),
+                diabetes         = _mf("diabetes"),
+                hypertension     = _mf("hypertension"),
+                preeclampsia     = _mf("preeclampsia"),
+                liq_praecox      = _mf("liq_praecox"),
+                pyrexia          = _mf("pyrexia"),
+                meconium         = _mf("meconium"),
+                presentation     = _mf("presentation"),
+                induced          = _mf("induced"),
+                i_stage_min      = _mf("i_stage_min"),
+                ii_stage_min     = _mf("ii_stage_min"),
+                no_progress      = _mf("no_progress"),
+                ck_kp            = _mf("ck_kp"),
+                sig2birth_s      = _mf("sig2birth_s"),
+                sex              = _mf("sex"),
+                rec_type         = _mf("rec_type"),
             ))
         except Exception as e:
             skipped += 1
