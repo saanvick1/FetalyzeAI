@@ -384,6 +384,84 @@ def compute_fetal_reserve_score(features: dict) -> float:
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# 11b. FIGO 2015 guideline binary flags (medical domain knowledge integration)
+# Reference: Ayres-de-Campos et al. (2015) Int J Gynecol Obstet 131(1):13-24
+# ────────────────────────────────────────────────────────────────────────────
+
+def compute_figo_flags(features: dict) -> dict:
+    """
+    Encode FIGO 2015 intrapartum CTG classification criteria as binary flags.
+
+    Normal:       Baseline 110-160, variability 5-25, no late/prolonged decels,
+                  accelerations present.
+    Suspicious:   Baseline 100-109 or 161-180, variability <5 for <90 min,
+                  no accelerations ≥40 min, early/variable decels.
+    Pathological: Baseline <100 or >180, variability <5 for ≥90 min, sinusoidal,
+                  repetitive late decels, prolonged decel.
+
+    These rules encode decades of expert obstetric knowledge directly into the
+    feature space — addressing the 'lack of medical knowledge integration' gap
+    in pure data-driven models.
+    """
+    baseline = features.get("baseline_fhr", float("nan"))
+    stv      = features.get("stv",          float("nan"))
+    flat_pct = features.get("flatline_pct", 0.0)
+    n_acc    = features.get("n_accels",     0.0)
+    dur_min  = max(features.get("duration_min", 1.0), 1.0)
+    late_dl  = features.get("late_decel_likelihood", 0.0)
+    prol_f   = features.get("prolonged_decel_flag",  0.0)
+
+    figo_tachycardia        = int(not np.isnan(baseline) and baseline > 160)
+    figo_bradycardia        = int(not np.isnan(baseline) and baseline < 110)
+    figo_abnormal_baseline  = int(figo_tachycardia or figo_bradycardia)
+    figo_absent_variability = int(not np.isnan(stv) and stv < 5.0)
+    figo_reduced_variability= int(not np.isnan(stv) and 5.0 <= stv < 10.0)
+    # Sinusoidal: persistent flat oscillation with very low variability
+    figo_sinusoidal         = int(flat_pct > 80.0 and not np.isnan(stv) and stv < 3.0)
+    # Absent accels: concerning only if recording is long enough (≥40 min)
+    figo_absent_accels      = int(dur_min >= 40.0 and float(n_acc) == 0.0)
+    figo_late_decels        = int(late_dl > 0.30)
+    figo_prolonged_decel    = int(float(prol_f) > 0)
+
+    # Pathological feature count
+    path_count = (
+        figo_abnormal_baseline      +
+        figo_sinusoidal             +
+        figo_absent_variability     +
+        int(late_dl > 0.50)         +   # repetitive late decels
+        figo_prolonged_decel
+    )
+    # Suspicious feature count
+    susp_count = (
+        figo_reduced_variability    +
+        figo_absent_accels          +
+        figo_late_decels
+    )
+
+    # Simplified 3-level FIGO category
+    if path_count >= 1:
+        figo_category = 2   # pathological
+    elif susp_count >= 1 or figo_tachycardia or figo_bradycardia:
+        figo_category = 1   # suspicious
+    else:
+        figo_category = 0   # normal
+
+    return {
+        "figo_abnormal_baseline":   float(figo_abnormal_baseline),
+        "figo_tachycardia":         float(figo_tachycardia),
+        "figo_bradycardia":         float(figo_bradycardia),
+        "figo_absent_variability":  float(figo_absent_variability),
+        "figo_reduced_variability": float(figo_reduced_variability),
+        "figo_absent_accels":       float(figo_absent_accels),
+        "figo_late_decels":         float(figo_late_decels),
+        "figo_prolonged_decel":     float(figo_prolonged_decel),
+        "figo_sinusoidal":          float(figo_sinusoidal),
+        "figo_composite_score":     float(path_count + susp_count),
+        "figo_category":            float(figo_category),
+    }
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # 11. signal quality
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -480,6 +558,7 @@ def extract_record_features(record, light: bool = False) -> dict:
         duration_min               = dur_min,
     )
     pre["fetal_reserve_score"] = compute_fetal_reserve_score(pre)
+    pre.update(compute_figo_flags(pre))
 
     if light:
         pre["record_id"]     = rd["record_id"]

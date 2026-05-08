@@ -403,6 +403,107 @@ export function ReserveNetPanel() {
         )}
       </section>
 
+      {/* ── OOD Detection ────────────────────────────────────────────────── */}
+      <section className="rn-card">
+        <h3 className="rn-card__title">Out-of-Distribution (OOD) Detection</h3>
+        <p className="rn-note" style={{ marginBottom: 16 }}>
+          An IsolationForest trained on the training set flags test records whose feature profiles
+          fall outside the training distribution. Records with unusually extreme or rare CTG
+          characteristics should be treated with extra caution — the model has seen fewer
+          cases like them and may be less reliable.
+        </p>
+        {(R.ood_detection as any)?.ood_rate_test != null ? (
+          <>
+            <div className="rn-hl-grid">
+              {[
+                { label: 'OOD Rate (test)',       val: (R.ood_detection as any).ood_rate_test,           pctFmt: true,  desc: 'Fraction of held-out test records flagged as out-of-distribution' },
+                { label: 'OOD Rate (val)',         val: (R.ood_detection as any).ood_rate_val,            pctFmt: true,  desc: 'Fraction of validation records flagged OOD (should match test rate if splits are similar)' },
+                { label: 'High-Risk → OOD',       val: (R.ood_detection as any).ood_rate_high_risk_test, pctFmt: true,  desc: 'What fraction of true high-risk cases were flagged OOD — important for safety' },
+                { label: 'Normal → OOD',          val: (R.ood_detection as any).ood_rate_normal_test,    pctFmt: true,  desc: 'Normal cases flagged OOD — should be low if training distribution is representative' },
+              ].map(({ label, val, pctFmt, desc }) => (
+                <div key={label} className="rn-hl-cell">
+                  <div className="rn-hl-cell__label">{label}</div>
+                  <div className="rn-hl-cell__val">{val != null ? (pctFmt ? pct(val as number) : fmt(val as number)) : '—'}</div>
+                  <div className="rn-hl-cell__desc">{desc}</div>
+                </div>
+              ))}
+            </div>
+            <p className="rn-note" style={{ marginTop: 12 }}>
+              Method: {(R.ood_detection as any).method ?? 'IsolationForest'}.
+              Threshold: 95th percentile of training anomaly scores.
+            </p>
+          </>
+        ) : (
+          <div className="rn-note">
+            OOD detection results will appear here after training.
+            Run <code>python train_reservenet_ctu.py</code> — the pipeline fits an IsolationForest
+            on training features automatically.
+          </div>
+        )}
+      </section>
+
+      {/* ── Adversarial / Clinical Stress Tests ─────────────────────────── */}
+      <section className="rn-card">
+        <h3 className="rn-card__title">Adversarial Robustness — Clinical Stress Tests</h3>
+        <p className="rn-note" style={{ marginBottom: 16 }}>
+          7 canonical CTG clinical profiles (textbook normal, severe bradycardia, sinusoidal,
+          late decels, etc.) are evaluated on the trained model. A clinically sound model must
+          correctly classify these archetypal cases. Failures indicate the model may not have
+          internalised core obstetric patterns.
+        </p>
+        {(R.adversarial_stress_tests as any)?.length > 0 ? (
+          <>
+            <div style={{ display: 'flex', gap: 24, marginBottom: 14, flexWrap: 'wrap' }}>
+              {[
+                { label: '3-Class Pass Rate', val: (R.adversarial_summary as any)?.pass_rate_3class },
+                { label: 'Binary Pass Rate',  val: (R.adversarial_summary as any)?.pass_rate_binary },
+              ].map(({ label, val }) => (
+                <div key={label} style={{ background: val != null && (val as number) >= 0.85 ? '#f0fdf4' : '#fef9c3', borderRadius: 8, padding: '12px 20px', border: `1px solid ${val != null && (val as number) >= 0.85 ? '#bbf7d0' : '#fde68a'}`, minWidth: 160 }}>
+                  <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 4 }}>{label}</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: val != null && (val as number) >= 0.85 ? '#16a34a' : '#d97706' }}>{val != null ? pct(val as number, 0) : '—'}</div>
+                </div>
+              ))}
+              <div style={{ alignSelf: 'center', fontSize: 13, color: '#6b7280', maxWidth: 300 }}>
+                {(R.adversarial_summary as any)?.method}
+              </div>
+            </div>
+            <div className="rn-table-wrap">
+              <table className="rn-table">
+                <thead>
+                  <tr><th>Clinical Profile</th><th>Expected</th><th>Predicted</th><th>P(HR)</th><th>P(Watch)</th><th>3-Class</th><th>Binary</th></tr>
+                </thead>
+                <tbody>
+                  {(R.adversarial_stress_tests as any[]).map((row: any) => (
+                    <tr key={row.case}>
+                      <td style={{ fontWeight: 500 }}>{row.case}</td>
+                      <td>
+                        <span className={`rn-class-pill rn-class-pill--${row.expected_label === 'Normal' ? 'normal' : row.expected_label === 'Watch' ? 'watch' : 'high'}`}>
+                          {row.expected_label}
+                        </span>
+                      </td>
+                      <td>
+                        <span className={`rn-class-pill rn-class-pill--${row.predicted_label === 'Normal' ? 'normal' : row.predicted_label === 'Watch' ? 'watch' : 'high'}`}>
+                          {row.predicted_label}
+                        </span>
+                      </td>
+                      <td style={{ color: (row.prob_high_risk ?? 0) >= 0.5 ? '#dc2626' : '#374151' }}>{fmt(row.prob_high_risk, 3)}</td>
+                      <td>{fmt(row.prob_watch, 3)}</td>
+                      <td className={row.correct_3class ? 'rn-td--good' : 'rn-td--bad'}>{row.correct_3class ? '✓ Pass' : '✗ Fail'}</td>
+                      <td className={row.correct_binary ? 'rn-td--good' : 'rn-td--bad'}>{row.correct_binary ? '✓' : '✗'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : (
+          <div className="rn-note">
+            Clinical stress test results will appear here after training.
+            Run <code>python train_reservenet_ctu.py</code>.
+          </div>
+        )}
+      </section>
+
       {/* ── Score Distribution Histogram ─────────────────────────────────── */}
       {shist.length > 0 && (
         <section className="rn-card">
@@ -714,6 +815,65 @@ export function ReserveNetPanel() {
         </div>
       </section>
 
+      {/* ── FIGO Medical Knowledge Integration ────────────────────────────── */}
+      <section className="rn-card">
+        <h3 className="rn-card__title">FIGO 2015 Medical Knowledge Integration</h3>
+        <p className="rn-note" style={{ marginBottom: 16 }}>
+          FetalyzeAI encodes the FIGO 2015 intrapartum CTG classification guidelines directly as
+          binary features, addressing the gap between pure data-driven models and established
+          obstetric expertise. These rule-based flags — abnormal baseline, absent variability,
+          sinusoidal pattern, late decelerations, prolonged decelerations — are fed into the
+          ensemble alongside signal features, grounding predictions in decades of clinical evidence.
+          The FIGO adherence metric shows how well the trained model aligns with guideline classifications.
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 10, marginBottom: 16 }}>
+          {[
+            { flag: 'figo_abnormal_baseline',   label: 'Abnormal Baseline',    desc: 'FHR <110 or >160 bpm',              color: '#dc2626' },
+            { flag: 'figo_tachycardia',         label: 'Tachycardia',          desc: 'Baseline >160 bpm',                 color: '#dc2626' },
+            { flag: 'figo_bradycardia',         label: 'Bradycardia',          desc: 'Baseline <110 bpm',                 color: '#dc2626' },
+            { flag: 'figo_absent_variability',  label: 'Absent Variability',   desc: 'STV <5 ms (pathological)',          color: '#dc2626' },
+            { flag: 'figo_reduced_variability', label: 'Reduced Variability',  desc: 'STV 5–10 ms (suspicious)',          color: '#f59e0b' },
+            { flag: 'figo_absent_accels',       label: 'Absent Accelerations', desc: 'No accels in ≥40 min recording',   color: '#f59e0b' },
+            { flag: 'figo_late_decels',         label: 'Late Decelerations',   desc: 'Late decel likelihood >30%',        color: '#dc2626' },
+            { flag: 'figo_prolonged_decel',     label: 'Prolonged Decel',      desc: '>2-min deceleration (pathological)',color: '#dc2626' },
+            { flag: 'figo_sinusoidal',          label: 'Sinusoidal Pattern',   desc: 'Flat oscillation + STV <3 ms',      color: '#dc2626' },
+          ].map(({ label, desc, color }) => (
+            <div key={label} style={{ background: '#fafafa', borderRadius: 8, padding: '10px 14px', border: '1px solid #e5e7eb' }}>
+              <div style={{ fontWeight: 600, fontSize: 13, color, marginBottom: 4 }}>{label}</div>
+              <div style={{ fontSize: 12, color: '#6b7280' }}>{desc}</div>
+            </div>
+          ))}
+          <div style={{ background: '#eff6ff', borderRadius: 8, padding: '10px 14px', border: '1px solid #bfdbfe', gridColumn: 'span 2' }}>
+            <div style={{ fontWeight: 600, fontSize: 13, color: '#1d4ed8', marginBottom: 4 }}>FIGO Composite Score + Category</div>
+            <div style={{ fontSize: 12, color: '#6b7280' }}>0=Normal, 1=Suspicious, 2=Pathological — encoded as two learnable features</div>
+          </div>
+        </div>
+
+        {(R.ctg_specific as any)?.figo_adherence ? (
+          <div style={{ background: '#f0fdf4', borderRadius: 8, padding: 16, border: '1px solid #bbf7d0' }}>
+            <div style={{ fontWeight: 700, color: '#16a34a', marginBottom: 10, fontSize: 14 }}>FIGO Guideline Adherence (training data)</div>
+            <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
+              {[
+                { label: 'FIGO vs outcome agreement', val: (R.ctg_specific as any).figo_adherence.figo_vs_label_agreement, pct: true },
+                { label: 'AUC (FIGO → high-risk)',     val: (R.ctg_specific as any).figo_adherence.figo_auc_high_risk,      pct: false },
+              ].map(({ label, val, pct: isPct }) => (
+                <div key={label}>
+                  <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 4 }}>{label}</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: '#16a34a' }}>
+                    {val != null ? (isPct ? pct(val as number) : fmt(val as number, 3)) : '—'}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="rn-note" style={{ marginTop: 8 }}>
+              {(R.ctg_specific as any).figo_adherence.note}
+            </p>
+          </div>
+        ) : (
+          <div className="rn-note">FIGO adherence statistics will appear here after training. Run <code>python train_reservenet_ctu.py</code>.</div>
+        )}
+      </section>
+
       {/* ── CTG-Specific Validation ───────────────────────────────────────── */}
       <section className="rn-card">
         <h3 className="rn-card__title">CTG-Specific Clinical Validation</h3>
@@ -1012,8 +1172,14 @@ export function ReserveNetPanel() {
             { icon: '✅', title: 'Temperature scaling on validation', body: 'Probability calibration (temperature T) fit on validation logits only. Test probabilities are never used for calibration.' },
             { icon: '✅', title: 'pH-only labels (no circular features)', body: 'All labels derived from cord blood pH / base deficit / Apgar. Feature columns are pure signal measurements with no label-derived components.' },
             { icon: '✅', title: 'Imputer/scaler fit on train only', body: 'Median imputer and RobustScaler fit exclusively on training indices inside each CV fold. Validation and test sets transformed with train statistics only.' },
-            { icon: '📊', title: 'Bootstrap CIs (500 iter)', body: '500 stratified bootstrap resamplings of the test set quantify uncertainty in all reported binary metrics — wide CIs flag small test size.' },
+            { icon: '📊', title: 'Bootstrap CIs (100 iter)', body: '100 stratified bootstrap resamplings of the OOF pool quantify uncertainty in all reported binary metrics — wide CIs flag small test size.' },
             { icon: '❌', title: 'No synthetic fallback allowed', body: 'Training crashes with RuntimeError if real CTU-CHB data is unavailable. fetal_health.csv, UCI, Kaggle, and synthetic data are permanently excluded.' },
+            { icon: '🏥', title: 'FIGO 2015 guidelines as features', body: '11 binary FIGO guideline flags (abnormal baseline, absent variability, sinusoidal, late decels, etc.) encode decades of expert obstetric knowledge directly in the feature space.' },
+            { icon: '🔍', title: 'OOD detection (IsolationForest)', body: 'IsolationForest fit on training features flags test records whose CTG profile lies outside the training distribution — these cases get elevated uncertainty.' },
+            { icon: '⚡', title: 'Adversarial clinical stress tests', body: '7 canonical CTG profiles (textbook normal, bradycardia, sinusoidal, late decels, etc.) verified post-training. Pass rate measures clinical face validity.' },
+            { icon: '⚖️', title: 'F2-optimised 3-class threshold', body: 'High-risk and watch thresholds optimised for F2-macro (β=2) — recall weighted 4× over precision to reflect the asymmetric cost of missing a distressed fetus.' },
+            { icon: '🎯', title: 'Asymmetric class weighting (HR ×2.5)', body: 'After SMOTE balancing, high-risk samples receive 2.5× additional weight in XGBoost and 4× in HGB — encoding the clinical cost asymmetry between false negatives and false alarms.' },
+            { icon: '📈', title: 'Signal quality subgroup analysis', body: 'Test set performance reported separately for good/acceptable/poor signal quality — ensuring the model does not appear robust only on clean, easy-to-classify recordings.' },
           ].map(({ icon, title, body }) => (
             <div key={title} className="rn-gen-card">
               <div className="rn-gen-card__icon">{icon}</div>

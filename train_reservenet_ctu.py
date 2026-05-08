@@ -36,7 +36,7 @@ from sklearn.metrics import (
     roc_auc_score, recall_score, f1_score, balanced_accuracy_score,
     precision_score, average_precision_score, confusion_matrix,
     roc_curve, precision_recall_curve, log_loss as sklearn_log_loss,
-    brier_score_loss,
+    brier_score_loss, fbeta_score,
 )
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import (
@@ -130,6 +130,11 @@ FEATURE_COLS = [
     "baseline_fhr_last30", "stv_last30", "ltv_last30", "std_fhr_last30",
     "n_decels_last30", "max_decel_depth_last30",
     "stv_trend_late_vs_full", "baseline_trend_late_vs_full",
+    # FIGO 2015 guideline binary flags — medical domain knowledge
+    "figo_abnormal_baseline", "figo_tachycardia", "figo_bradycardia",
+    "figo_absent_variability", "figo_reduced_variability", "figo_absent_accels",
+    "figo_late_decels", "figo_prolonged_decel", "figo_sinusoidal",
+    "figo_composite_score", "figo_category",
 ]
 
 
@@ -334,13 +339,13 @@ def main(window_features: bool = False):
     # ── Base models — trained on SMOTE-augmented train fold ───────────────────
     spw_eff = float(np.sum(yb_tr_s == 0)) / max(float(np.sum(yb_tr_s == 1)), 1)
 
-    print("\n[xgb] training bagged XGBoost (5 seeds, Optuna params) ...")
-    xgb_seeds = [42, 7, 2024, 1337, 99]
+    print("\n[xgb] training bagged XGBoost (4 seeds, Optuna params) ...")
+    xgb_seeds = [42, 7, 2024, 1337]
     xgb_models = []
     p_xgb_va_list, p_xgb_te_list = [], []
     for sd in xgb_seeds:
         p = dict(**{k: v for k, v in best_xgb_params.items() if k != "n_estimators"},
-                 n_estimators=best_xgb_params.get("n_estimators", 600))
+                 n_estimators=min(best_xgb_params.get("n_estimators", 600), 500))
         lr_key = "lr" if "lr" in p else "learning_rate"
         if "lr" in p:
             p["learning_rate"] = p.pop("lr")
@@ -372,7 +377,7 @@ def main(window_features: bool = False):
 
     print("[et]  training ExtraTrees (class-balanced) ...")
     et_bin = ExtraTreesClassifier(
-        n_estimators=600, max_depth=None, min_samples_leaf=3,
+        n_estimators=500, max_depth=None, min_samples_leaf=3,
         max_features="sqrt", class_weight="balanced_subsample",
         random_state=42, n_jobs=-1,
     )
@@ -389,7 +394,7 @@ def main(window_features: bool = False):
 
     print("[rf]  training random forest (class-balanced) ...")
     rf_bin = RandomForestClassifier(
-        n_estimators=500, max_depth=10, min_samples_leaf=3,
+        n_estimators=400, max_depth=10, min_samples_leaf=3,
         class_weight="balanced_subsample", random_state=42, n_jobs=-1,
     )
     rf_bin.fit(X_tr_s, yb_tr_s)
@@ -427,8 +432,8 @@ def main(window_features: bool = False):
 
         spw_f = float(np.sum(ybs == 0)) / max(float(np.sum(ybs == 1)), 1)
         mf = xgb.XGBClassifier(
-            n_estimators=300, max_depth=5, learning_rate=0.03,
-            subsample=0.85, colsample_bytree=0.80, min_child_weight=3,
+            n_estimators=200, max_depth=5, learning_rate=0.03,
+            subsample=0.85, colsample_bytree=0.75, min_child_weight=3,
             reg_alpha=0.3, reg_lambda=2.5, gamma=0.4,
             scale_pos_weight=spw_f, objective="binary:logistic",
             eval_metric="auc", random_state=42, n_jobs=-1, tree_method="hist",
@@ -436,12 +441,12 @@ def main(window_features: bool = False):
         mf.fit(Xts, ybs, verbose=False)
         oof_xgb[te_i] = mf.predict_proba(Xe_f)[:, 1]
 
-        ef = ExtraTreesClassifier(n_estimators=200, min_samples_leaf=3,
+        ef = ExtraTreesClassifier(n_estimators=150, min_samples_leaf=3,
                                   class_weight="balanced_subsample", random_state=42, n_jobs=-1)
         ef.fit(Xts, ybs)
         oof_et[te_i] = ef.predict_proba(Xe_f)[:, 1]
 
-        rf_f = RandomForestClassifier(n_estimators=200, max_depth=10, min_samples_leaf=3,
+        rf_f = RandomForestClassifier(n_estimators=150, max_depth=10, min_samples_leaf=3,
                                       class_weight="balanced_subsample", random_state=42, n_jobs=-1)
         rf_f.fit(Xts, ybs)
         oof_rf[te_i] = rf_f.predict_proba(Xe_f)[:, 1]
@@ -542,6 +547,10 @@ def main(window_features: bool = False):
     counts3 = np.bincount(y_tr3, minlength=3).astype(float)
     cw3 = len(y_tr3) / (3.0 * np.maximum(counts3, 1))
     sw3 = cw3[y_tr3]
+    # Extra 2.5× boost for HR class — SMOTE balances counts but HR cases still
+    # benefit from emphasis: a missed high-risk case is far more dangerous than
+    # a false alarm (asymmetric clinical cost).
+    sw3[y_tr3 == 2] *= 2.5
 
     # Also compute sample_weight for validation (for eval_set monitoring only)
     counts_va3 = np.bincount(y_va, minlength=3).astype(float)
@@ -549,7 +558,7 @@ def main(window_features: bool = False):
     sw_va3 = cw_va3[y_va]
 
     xgb3 = xgb.XGBClassifier(
-        n_estimators=500, max_depth=5, learning_rate=0.025,
+        n_estimators=400, max_depth=5, learning_rate=0.025,
         subsample=0.80, colsample_bytree=0.75,
         min_child_weight=2, reg_alpha=0.5, reg_lambda=2.0, gamma=0.3,
         objective="multi:softprob", num_class=3,
@@ -568,7 +577,10 @@ def main(window_features: bool = False):
         class_weight="balanced", random_state=42,
         early_stopping=True, validation_fraction=0.15, n_iter_no_change=20,
     )
-    hgb3.fit(X_tr, y_tr)
+    # HGB doesn't support dict class_weight — use sample_weight with strong HR emphasis
+    sw_hgb3 = np.ones(len(y_tr), dtype=float)
+    sw_hgb3[y_tr == 2] = 4.0   # 4× for HR on original (non-SMOTE) distribution
+    hgb3.fit(X_tr, y_tr, sample_weight=sw_hgb3)
     hgb3_te = hgb3.predict_proba(X_te)
 
     # Soft ensemble: 0.6 × XGB3 + 0.4 × HGB3
@@ -579,26 +591,30 @@ def main(window_features: bool = False):
     va_hgb3 = hgb3.predict_proba(X_va)
     va_ens3  = 0.6 * va_xgb3 + 0.4 * va_hgb3
 
-    # Sweep thresholds for high-risk and watch classes
-    best_bal_3 = -1.0
-    best_thr_hr = 0.3
-    best_thr_w  = 0.3
-    for thr_hr in np.arange(0.10, 0.55, 0.05):
-        for thr_w in np.arange(0.10, 0.55, 0.05):
+    # Sweep thresholds — optimise F2 (β=2) to weight recall 4× over precision.
+    # Clinically: missing a high-risk case is far worse than a false alarm.
+    # Sweep lower HR range [0.05, 0.40] to capture more true high-risk cases.
+    best_f2_3   = -1.0
+    best_thr_hr = 0.2
+    best_thr_w  = 0.2
+    for thr_hr in np.arange(0.05, 0.45, 0.05):
+        for thr_w in np.arange(0.05, 0.40, 0.05):
             pred_3 = np.zeros(len(y_va), dtype=int)
             pred_3[va_ens3[:, 2] >= thr_hr] = 2
             pred_3[(va_ens3[:, 2] < thr_hr) & (va_ens3[:, 1] >= thr_w)] = 1
             try:
-                bal = float(balanced_accuracy_score(y_va, pred_3))
+                f2 = float(fbeta_score(y_va, pred_3, beta=2.0,
+                                       average="macro", zero_division=0))
             except Exception:
                 continue
-            if bal > best_bal_3:
-                best_bal_3 = bal
+            if f2 > best_f2_3:
+                best_f2_3   = f2
                 best_thr_hr = float(thr_hr)
                 best_thr_w  = float(thr_w)
+    best_bal_3 = best_f2_3   # keep variable name for downstream compat
 
-    print(f"[xgb3] best 3-class threshold: hr={best_thr_hr:.2f}  watch={best_thr_w:.2f}  "
-          f"val balanced_acc={best_bal_3:.4f}")
+    print(f"[xgb3] best 3-class threshold (F2 β=2): hr={best_thr_hr:.2f}  "
+          f"watch={best_thr_w:.2f}  val F2-macro={best_f2_3:.4f}")
 
     # Apply tuned per-class thresholds to test set
     xgb3_pred = np.zeros(len(y_te), dtype=int)
@@ -632,11 +648,11 @@ def main(window_features: bool = False):
     rn_metrics = compute_all_metrics(y_te, rn_te, threshold=best_thr)
 
     # ── Bootstrap CIs (over full 552-record OOF pool) ─────────────────────────
-    print("\n[bootstrap] 150-iter bootstrap CIs over full OOF pool ...")
+    print("\n[bootstrap] 100-iter bootstrap CIs over full OOF pool ...")
     rng_b = np.random.RandomState(42)
     bs_auroc, bs_sens, bs_spec, bs_f1, bs_auprc = [], [], [], [], []
     n_full = len(yb_all)
-    for _ in range(150):
+    for _ in range(100):
         idx = rng_b.choice(n_full, n_full, replace=True)
         try:
             bs_auroc.append(float(roc_auc_score(yb_all[idx], p_bin_full[idx])))
@@ -716,6 +732,328 @@ def main(window_features: bool = False):
         "grey_zone_lo":                _f4(grey_lo),
         "grey_zone_hi":                _f4(grey_hi),
     }
+
+    # ── OOD Detection (IsolationForest) ──────────────────────────────────────
+    print("\n[ood] fitting IsolationForest OOD detector on training features ...")
+    try:
+        from sklearn.ensemble import IsolationForest as _IF
+        ood_clf = _IF(n_estimators=100, contamination=0.05, random_state=42, n_jobs=-1)
+        ood_clf.fit(X_tr)
+        _ood_scores_tr = -ood_clf.score_samples(X_tr)
+        _ood_scores_va = -ood_clf.score_samples(X_va)
+        _ood_scores_te = -ood_clf.score_samples(X_te)
+        ood_threshold  = float(np.percentile(_ood_scores_tr, 95))
+        ood_rate_te    = float(np.mean(_ood_scores_te > ood_threshold))
+        ood_rate_va    = float(np.mean(_ood_scores_va > ood_threshold))
+        _flag_te = _ood_scores_te > ood_threshold
+        ood_hr_te     = float(np.mean(_flag_te[y_te == 2])) if (y_te == 2).sum() > 0 else float("nan")
+        ood_watch_te  = float(np.mean(_flag_te[y_te == 1])) if (y_te == 1).sum() > 0 else float("nan")
+        ood_normal_te = float(np.mean(_flag_te[y_te == 0])) if (y_te == 0).sum() > 0 else float("nan")
+        print(f"[ood] threshold={ood_threshold:.4f}  OOD rate test={ood_rate_te:.3f}"
+              f"  HR-OOD={ood_hr_te:.3f}  Normal-OOD={ood_normal_te:.3f}")
+        ood_detection = {
+            "method":                  "IsolationForest (n_estimators=100, contamination=5%)",
+            "ood_threshold_95pct":     _f4(ood_threshold),
+            "ood_rate_test":           _f4(ood_rate_te),
+            "ood_rate_val":            _f4(ood_rate_va),
+            "ood_rate_high_risk_test": _f4(ood_hr_te),
+            "ood_rate_watch_test":     _f4(ood_watch_te),
+            "ood_rate_normal_test":    _f4(ood_normal_te),
+            "interpretation": (
+                "Records above the 95th-percentile training anomaly score are flagged OOD. "
+                "High HR-OOD rate indicates pathological cases may be under-represented in training."
+            ),
+        }
+    except Exception as _e:
+        print(f"[ood] warning: {_e}")
+        ood_detection = {"method": "IsolationForest", "error": str(_e)}
+
+    # ── Adversarial / Clinical Stress Tests ───────────────────────────────────
+    # 7 canonical CTG profiles evaluate whether the model respects
+    # established clinical patterns without requiring held-out label data.
+    print("\n[adversarial] running 7 canonical clinical stress tests ...")
+    _med = {c: float(np.nanmedian(X_raw[idx_tr][:, i])) for i, c in enumerate(cols)}
+
+    def _build_stress(overrides):
+        v = np.array([[_med.get(c, 0.0) for c in cols]])
+        for k, val in overrides.items():
+            if k in cols:
+                v[0, cols.index(k)] = float(val)
+        return scaler.transform(imputer.transform(v))
+
+    _stress_cases = [
+        ("Textbook Normal CTG", 0, {
+            "baseline_fhr": 130.0, "mean_fhr": 130.0, "std_fhr": 8.0,
+            "stv": 15.0, "ltv": 25.0, "stv_norm": 1.0, "ltv_norm": 1.0, "roughness": 2.5,
+            "tachycardia_frac": 0.0, "bradycardia_frac": 0.0,
+            "n_accels": 4, "accels_per_30min": 4.0, "mean_accel_height": 15.0,
+            "n_decels": 0, "decels_per_30min": 0.0, "mean_decel_depth": 0.0,
+            "max_decel_depth": 0.0, "mean_decel_dur_s": 0.0, "total_decel_dur_s": 0.0,
+            "decel_area": 0.0, "prolonged_decel_flag": 0.0,
+            "late_decel_likelihood": 0.0, "delayed_recovery_score": 0.0,
+            "worsening_recovery_trend": 0.0, "decel_burden_idx": 0.03,
+            "fetal_reserve_score": 85.0, "signal_quality": 0.38,
+            "missing_fhr_pct": 5.0, "flatline_pct": 2.0, "abrupt_jump_count": 0.0,
+            "baseline_fhr_last30": 130.0, "stv_last30": 15.0, "ltv_last30": 25.0,
+            "std_fhr_last30": 8.0, "n_decels_last30": 0, "max_decel_depth_last30": 0.0,
+            "stv_trend_late_vs_full": 0.0, "baseline_trend_late_vs_full": 0.0,
+            "figo_abnormal_baseline": 0.0, "figo_tachycardia": 0.0, "figo_bradycardia": 0.0,
+            "figo_absent_variability": 0.0, "figo_reduced_variability": 0.0,
+            "figo_absent_accels": 0.0, "figo_late_decels": 0.0, "figo_prolonged_decel": 0.0,
+            "figo_sinusoidal": 0.0, "figo_composite_score": 0.0, "figo_category": 0.0,
+        }),
+        ("Severe Bradycardia + Absent Variability", 2, {
+            "baseline_fhr": 82.0, "mean_fhr": 82.0, "std_fhr": 3.0,
+            "stv": 1.8, "ltv": 3.5, "stv_norm": 0.12, "ltv_norm": 0.14, "roughness": 0.3,
+            "tachycardia_frac": 0.0, "bradycardia_frac": 0.95,
+            "n_accels": 0, "accels_per_30min": 0.0, "mean_accel_height": 0.0,
+            "n_decels": 4, "decels_per_30min": 2.0, "mean_decel_depth": 25.0,
+            "max_decel_depth": 40.0, "mean_decel_dur_s": 90.0, "total_decel_dur_s": 360.0,
+            "decel_area": 600.0, "prolonged_decel_flag": 0.0,
+            "late_decel_likelihood": 0.1, "delayed_recovery_score": 0.45,
+            "worsening_recovery_trend": 0.3, "decel_burden_idx": 0.78,
+            "fetal_reserve_score": 8.0, "signal_quality": 0.28,
+            "missing_fhr_pct": 15.0, "flatline_pct": 8.0, "abrupt_jump_count": 2.0,
+            "baseline_fhr_last30": 78.0, "stv_last30": 1.5, "ltv_last30": 3.0,
+            "std_fhr_last30": 2.5, "n_decels_last30": 4, "max_decel_depth_last30": 40.0,
+            "stv_trend_late_vs_full": -1.5, "baseline_trend_late_vs_full": -5.0,
+            "figo_bradycardia": 1.0, "figo_abnormal_baseline": 1.0,
+            "figo_absent_variability": 1.0, "figo_reduced_variability": 1.0,
+            "figo_absent_accels": 1.0, "figo_tachycardia": 0.0, "figo_late_decels": 0.0,
+            "figo_prolonged_decel": 0.0, "figo_sinusoidal": 0.0,
+            "figo_composite_score": 4.0, "figo_category": 2.0,
+        }),
+        ("Absent Variability + Repetitive Late Decels", 2, {
+            "baseline_fhr": 125.0, "mean_fhr": 124.0, "std_fhr": 2.0,
+            "stv": 1.5, "ltv": 3.0, "stv_norm": 0.10, "ltv_norm": 0.12, "roughness": 0.2,
+            "tachycardia_frac": 0.0, "bradycardia_frac": 0.0,
+            "n_accels": 0, "accels_per_30min": 0.0, "mean_accel_height": 0.0,
+            "n_decels": 8, "decels_per_30min": 4.5, "mean_decel_depth": 28.0,
+            "max_decel_depth": 48.0, "mean_decel_dur_s": 110.0, "total_decel_dur_s": 880.0,
+            "decel_area": 1400.0, "prolonged_decel_flag": 0.0,
+            "late_decel_likelihood": 0.96, "delayed_recovery_score": 0.72,
+            "worsening_recovery_trend": 0.6, "decel_burden_idx": 0.88,
+            "fetal_reserve_score": 6.0, "signal_quality": 0.27,
+            "missing_fhr_pct": 12.0, "flatline_pct": 5.0, "abrupt_jump_count": 1.0,
+            "baseline_fhr_last30": 122.0, "stv_last30": 1.3, "ltv_last30": 2.8,
+            "std_fhr_last30": 1.8, "n_decels_last30": 8, "max_decel_depth_last30": 48.0,
+            "stv_trend_late_vs_full": -0.8, "baseline_trend_late_vs_full": -3.0,
+            "figo_absent_variability": 1.0, "figo_reduced_variability": 1.0,
+            "figo_absent_accels": 1.0, "figo_late_decels": 1.0,
+            "figo_abnormal_baseline": 0.0, "figo_tachycardia": 0.0, "figo_bradycardia": 0.0,
+            "figo_prolonged_decel": 0.0, "figo_sinusoidal": 0.0,
+            "figo_composite_score": 4.0, "figo_category": 2.0,
+        }),
+        ("Sinusoidal Pattern", 2, {
+            "baseline_fhr": 128.0, "mean_fhr": 128.0, "std_fhr": 1.5,
+            "stv": 0.8, "ltv": 2.0, "stv_norm": 0.05, "ltv_norm": 0.08, "roughness": 0.5,
+            "tachycardia_frac": 0.0, "bradycardia_frac": 0.0,
+            "n_accels": 0, "accels_per_30min": 0.0, "mean_accel_height": 0.0,
+            "n_decels": 0, "decels_per_30min": 0.0, "mean_decel_depth": 0.0,
+            "max_decel_depth": 0.0, "mean_decel_dur_s": 0.0, "total_decel_dur_s": 0.0,
+            "decel_area": 0.0, "prolonged_decel_flag": 0.0,
+            "late_decel_likelihood": 0.0, "delayed_recovery_score": 0.0,
+            "worsening_recovery_trend": 0.0, "decel_burden_idx": 0.12,
+            "fetal_reserve_score": 4.0, "signal_quality": 0.30,
+            "missing_fhr_pct": 10.0, "flatline_pct": 88.0, "abrupt_jump_count": 0.0,
+            "baseline_fhr_last30": 128.0, "stv_last30": 0.8, "ltv_last30": 2.0,
+            "std_fhr_last30": 1.5, "n_decels_last30": 0, "max_decel_depth_last30": 0.0,
+            "stv_trend_late_vs_full": 0.0, "baseline_trend_late_vs_full": 0.0,
+            "figo_sinusoidal": 1.0, "figo_absent_variability": 1.0,
+            "figo_reduced_variability": 1.0, "figo_absent_accels": 1.0,
+            "figo_abnormal_baseline": 0.0, "figo_tachycardia": 0.0, "figo_bradycardia": 0.0,
+            "figo_late_decels": 0.0, "figo_prolonged_decel": 0.0,
+            "figo_composite_score": 4.0, "figo_category": 2.0,
+        }),
+        ("Tachycardia + Prolonged Deceleration", 2, {
+            "baseline_fhr": 175.0, "mean_fhr": 172.0, "std_fhr": 12.0,
+            "stv": 5.0, "ltv": 14.0, "stv_norm": 0.33, "ltv_norm": 0.56, "roughness": 3.5,
+            "tachycardia_frac": 0.82, "bradycardia_frac": 0.0,
+            "n_accels": 1, "accels_per_30min": 0.5, "mean_accel_height": 8.0,
+            "n_decels": 3, "decels_per_30min": 1.5, "mean_decel_depth": 32.0,
+            "max_decel_depth": 65.0, "mean_decel_dur_s": 200.0, "total_decel_dur_s": 600.0,
+            "decel_area": 1000.0, "prolonged_decel_flag": 1.0,
+            "late_decel_likelihood": 0.2, "delayed_recovery_score": 0.55,
+            "worsening_recovery_trend": 0.45, "decel_burden_idx": 0.68,
+            "fetal_reserve_score": 15.0, "signal_quality": 0.26,
+            "missing_fhr_pct": 18.0, "flatline_pct": 3.0, "abrupt_jump_count": 5.0,
+            "baseline_fhr_last30": 178.0, "stv_last30": 4.5, "ltv_last30": 13.0,
+            "std_fhr_last30": 11.0, "n_decels_last30": 3, "max_decel_depth_last30": 65.0,
+            "stv_trend_late_vs_full": -1.2, "baseline_trend_late_vs_full": 4.0,
+            "figo_tachycardia": 1.0, "figo_abnormal_baseline": 1.0,
+            "figo_prolonged_decel": 1.0, "figo_absent_accels": 0.0,
+            "figo_bradycardia": 0.0, "figo_absent_variability": 0.0,
+            "figo_late_decels": 0.0, "figo_sinusoidal": 0.0, "figo_reduced_variability": 0.0,
+            "figo_composite_score": 3.0, "figo_category": 2.0,
+        }),
+        ("Borderline Watch Pattern", 1, {
+            "baseline_fhr": 108.0, "mean_fhr": 109.0, "std_fhr": 7.0,
+            "stv": 6.5, "ltv": 12.0, "stv_norm": 0.43, "ltv_norm": 0.48, "roughness": 2.0,
+            "tachycardia_frac": 0.0, "bradycardia_frac": 0.08,
+            "n_accels": 1, "accels_per_30min": 1.2, "mean_accel_height": 10.0,
+            "n_decels": 2, "decels_per_30min": 1.0, "mean_decel_depth": 18.0,
+            "max_decel_depth": 28.0, "mean_decel_dur_s": 60.0, "total_decel_dur_s": 120.0,
+            "decel_area": 260.0, "prolonged_decel_flag": 0.0,
+            "late_decel_likelihood": 0.15, "delayed_recovery_score": 0.28,
+            "worsening_recovery_trend": 0.12, "decel_burden_idx": 0.38,
+            "fetal_reserve_score": 42.0, "signal_quality": 0.29,
+            "missing_fhr_pct": 20.0, "flatline_pct": 4.0, "abrupt_jump_count": 1.0,
+            "baseline_fhr_last30": 106.0, "stv_last30": 6.0, "ltv_last30": 11.5,
+            "std_fhr_last30": 6.5, "n_decels_last30": 2, "max_decel_depth_last30": 28.0,
+            "stv_trend_late_vs_full": -0.5, "baseline_trend_late_vs_full": -2.0,
+            "figo_bradycardia": 1.0, "figo_reduced_variability": 0.0,
+            "figo_absent_variability": 0.0, "figo_tachycardia": 0.0,
+            "figo_abnormal_baseline": 1.0, "figo_absent_accels": 0.0,
+            "figo_late_decels": 0.0, "figo_prolonged_decel": 0.0, "figo_sinusoidal": 0.0,
+            "figo_composite_score": 1.0, "figo_category": 1.0,
+        }),
+        ("Reactive Reassuring CTG", 0, {
+            "baseline_fhr": 138.0, "mean_fhr": 139.0, "std_fhr": 9.0,
+            "stv": 13.0, "ltv": 22.0, "stv_norm": 0.87, "ltv_norm": 0.88, "roughness": 3.2,
+            "tachycardia_frac": 0.0, "bradycardia_frac": 0.0,
+            "n_accels": 5, "accels_per_30min": 5.5, "mean_accel_height": 18.0,
+            "n_decels": 0, "decels_per_30min": 0.0, "mean_decel_depth": 0.0,
+            "max_decel_depth": 0.0, "mean_decel_dur_s": 0.0, "total_decel_dur_s": 0.0,
+            "decel_area": 0.0, "prolonged_decel_flag": 0.0,
+            "late_decel_likelihood": 0.0, "delayed_recovery_score": 0.0,
+            "worsening_recovery_trend": 0.0, "decel_burden_idx": 0.02,
+            "fetal_reserve_score": 82.0, "signal_quality": 0.40,
+            "missing_fhr_pct": 4.0, "flatline_pct": 1.0, "abrupt_jump_count": 0.0,
+            "baseline_fhr_last30": 139.0, "stv_last30": 13.5, "ltv_last30": 22.5,
+            "std_fhr_last30": 9.5, "n_decels_last30": 0, "max_decel_depth_last30": 0.0,
+            "stv_trend_late_vs_full": 0.5, "baseline_trend_late_vs_full": 1.0,
+            "figo_abnormal_baseline": 0.0, "figo_tachycardia": 0.0, "figo_bradycardia": 0.0,
+            "figo_absent_variability": 0.0, "figo_reduced_variability": 0.0,
+            "figo_absent_accels": 0.0, "figo_late_decels": 0.0, "figo_prolonged_decel": 0.0,
+            "figo_sinusoidal": 0.0, "figo_composite_score": 0.0, "figo_category": 0.0,
+        }),
+    ]
+
+    adv_results = []
+    for _cn, _ec, _ov in _stress_cases:
+        try:
+            _x = _build_stress(_ov)
+            _pb = float(np.mean([m.predict_proba(_x)[0, 1] for m in xgb_models]))
+            _p3 = 0.6 * xgb3.predict_proba(_x)[0] + 0.4 * hgb3.predict_proba(_x)[0]
+            _pred3 = 2 if _p3[2] >= best_thr_hr else (1 if _p3[1] >= best_thr_w else 0)
+            _ok3 = _pred3 == _ec
+            _okb  = bool(_pb >= best_thr) == bool(_ec > 0)
+            adv_results.append({
+                "case":             _cn,
+                "expected_label":   LABEL_MAP[_ec],
+                "predicted_label":  LABEL_MAP[_pred3],
+                "prob_normal":      _f4(float(_p3[0])),
+                "prob_watch":       _f4(float(_p3[1])),
+                "prob_high_risk":   _f4(float(_p3[2])),
+                "binary_prob":      _f4(float(_pb)),
+                "correct_3class":   bool(_ok3),
+                "correct_binary":   bool(_okb),
+            })
+            print(f"  [{'✓' if _ok3 else '✗'}] {_cn}: "
+                  f"expected={LABEL_MAP[_ec]}, got={LABEL_MAP[_pred3]}"
+                  f"  P(HR)={_p3[2]:.3f}")
+        except Exception as _e:
+            print(f"  [!] {_cn}: error — {_e}")
+
+    adv_pass_3 = float(np.mean([r["correct_3class"] for r in adv_results])) if adv_results else float("nan")
+    adv_pass_b = float(np.mean([r["correct_binary"] for r in adv_results])) if adv_results else float("nan")
+    print(f"[adversarial] 3-class pass: {adv_pass_3:.0%}  binary pass: {adv_pass_b:.0%}")
+
+    # ── CTG-Specific Clinical Validation ──────────────────────────────────────
+    print("\n[ctg-specific] computing FRS vs pH, DBI/CSR by class, FIGO adherence ...")
+    ctg_specific: dict = {}
+    try:
+        from scipy import stats as _st
+        _ph_col   = df_lab["ph"].values
+        _risk_col = df_lab["risk_label"].values
+        _frs_col  = df_lab["fetal_reserve_score"].values if "fetal_reserve_score" in df_lab.columns else np.full(len(df_lab), np.nan)
+        _dbi_col  = df_lab["decel_burden_idx"].values    if "decel_burden_idx"    in df_lab.columns else np.full(len(df_lab), np.nan)
+        _csr_col  = df_lab["csr_score"].values           if "csr_score"           in df_lab.columns else np.full(len(df_lab), np.nan)
+
+        _v_ph = ~np.isnan(_ph_col) & ~np.isnan(_frs_col)
+        if _v_ph.sum() > 10:
+            _sp_r, _ = _st.spearmanr(_frs_col[_v_ph], _ph_col[_v_ph])
+            _pe_r, _ = _st.pearsonr( _frs_col[_v_ph], _ph_col[_v_ph])
+            _y_hr_b  = (_risk_col[_v_ph] == 2).astype(int)
+            _frs_auc = float(roc_auc_score(_y_hr_b, -_frs_col[_v_ph])) if _y_hr_b.sum() > 0 else float("nan")
+            ctg_specific["frs_vs_ph"] = {
+                "spearman_r": _f4(float(_sp_r)),
+                "pearson_r":  _f4(float(_pe_r)),
+                "auc":        _f4(float(_frs_auc)),
+                "note": "Low FRS → high-risk label; AUC measures discrimination.",
+            }
+
+        for _col, _col_key in [(_dbi_col, "dbi_by_class"), (_csr_col, "csr_by_class")]:
+            _v = ~np.isnan(_col)
+            if _v.sum() < 10:
+                continue
+            _entry: dict = {}
+            for _lbl, _lid in [("low_risk", 0), ("watch", 1), ("high_risk", 2)]:
+                _m = (_risk_col == _lid) & _v
+                _entry[_lbl] = _f4(float(np.nanmean(_col[_m]))) if _m.sum() > 0 else None
+            _y_hr_b2 = (_risk_col[_v] == 2).astype(int)
+            if _y_hr_b2.sum() > 0:
+                try:
+                    _entry["auc"] = _f4(float(roc_auc_score(_y_hr_b2, _col[_v])))
+                except Exception:
+                    _entry["auc"] = None
+            _v_ph2 = ~np.isnan(_ph_col) & _v
+            if _v_ph2.sum() > 10:
+                try:
+                    _r_ph, _ = _st.pearsonr(_col[_v_ph2], _ph_col[_v_ph2])
+                    _entry["corr_ph"] = _f4(float(_r_ph))
+                except Exception:
+                    _entry["corr_ph"] = None
+            ctg_specific[_col_key] = _entry
+
+        # FIGO adherence: compare FIGO rule-based category to pH-derived label
+        if "figo_category" in df_lab.columns:
+            _fig_col = df_lab["figo_category"].values
+            _v_fig   = ~np.isnan(_fig_col)
+            if _v_fig.sum() > 10:
+                _agree = float(np.mean(_fig_col[_v_fig] == _risk_col[_v_fig]))
+                _y_hr_fig = (_risk_col[_v_fig] == 2).astype(int)
+                _fauc = float("nan")
+                if _y_hr_fig.sum() > 0:
+                    try:
+                        _fauc = float(roc_auc_score(_y_hr_fig, _fig_col[_v_fig]))
+                    except Exception:
+                        pass
+                ctg_specific["figo_adherence"] = {
+                    "figo_vs_label_agreement": _f4(_agree),
+                    "figo_auc_high_risk":      _f4(_fauc),
+                    "note": "Agreement between FIGO 2015 rule-based category and pH/BD-derived outcome label.",
+                }
+    except Exception as _e:
+        print(f"[ctg-specific] warning: {_e}")
+
+    # ── Signal quality subgroup analysis (test set) ───────────────────────────
+    print("\n[sq-subgroups] signal quality subgroup analysis on test set ...")
+    signal_quality_subgroups: dict = {}
+    if "signal_quality" in df_lab.columns:
+        _sq_te = df_lab["signal_quality"].values[idx_te]
+        _sq_tr_vals = df_lab["signal_quality"].values[idx_tr]
+        _sq_q33 = float(np.nanpercentile(_sq_tr_vals, 33))
+        _sq_q67 = float(np.nanpercentile(_sq_tr_vals, 67))
+        for _grp, _lo, _hi in [("good", _sq_q67, 9999.0), ("acceptable", _sq_q33, _sq_q67), ("poor", -9999.0, _sq_q33)]:
+            _gm = (_sq_te >= _lo) & (_sq_te < _hi)
+            if _gm.sum() == 0:
+                continue
+            _yg_b = yb_te[_gm]
+            _pg_b = p_bin_te[_gm]
+            _pred_g = (_pg_b >= best_thr).astype(int)
+            _acc_g  = float(np.mean(_pred_g == _yg_b))
+            _y3_g   = y_te[_gm]
+            _hr_m   = _y3_g == 2
+            _hr_rec_g = float(np.mean((_pg_b[_hr_m] >= best_thr).astype(int))) if _hr_m.sum() > 0 else float("nan")
+            _unc_g  = float(np.mean((_pg_b >= grey_lo) & (_pg_b <= grey_hi)))
+            signal_quality_subgroups[_grp] = {
+                "n":                int(_gm.sum()),
+                "accuracy":         _f4(_acc_g),
+                "high_risk_recall": _f4(_hr_rec_g),
+                "uncertainty_rate": _f4(_unc_g),
+            }
+        print(f"[sq-subgroups] {signal_quality_subgroups}")
 
     # ── CV metrics computed from OOF predictions (no extra model fits) ────────
     # Using the 5-fold OOF pool already computed above — avoids 5 extra training runs
@@ -1008,10 +1346,21 @@ def main(window_features: bool = False):
         },
         "uncertainty_coverage": uncertainty_coverage,
         "threshold_3class": {
-            "thr_high_risk": _f4(best_thr_hr),
-            "thr_watch":     _f4(best_thr_w),
-            "val_balanced_accuracy": _f4(best_bal_3),
+            "thr_high_risk":    _f4(best_thr_hr),
+            "thr_watch":        _f4(best_thr_w),
+            "val_f2_macro":     _f4(best_f2_3),
+            "optimization_metric": "F2-macro (β=2, recall-weighted)",
         },
+        "ood_detection": ood_detection,
+        "adversarial_stress_tests": adv_results,
+        "adversarial_summary": {
+            "n_cases":          len(adv_results),
+            "pass_rate_3class": _f4(adv_pass_3),
+            "pass_rate_binary": _f4(adv_pass_b),
+            "method": "7 canonical CTG profiles evaluated on trained ensemble (no label required).",
+        },
+        "ctg_specific": ctg_specific,
+        "signal_quality_subgroups": signal_quality_subgroups,
         "threshold_sweep":  thr_sweep,
         "calibration_curve": calibration,
         "score_histogram":   score_hist,
