@@ -129,6 +129,49 @@ export function ReserveNetPanel() {
         </div>
       </section>
 
+      {/* ── Clinical Priority Metrics ────────────────────────────────────── */}
+      <section className="rn-card">
+        <h3 className="rn-card__title">Clinical Priority Metrics — Key Numbers at a Glance</h3>
+        <p className="rn-note" style={{ marginBottom: 16 }}>
+          The metrics that matter most for a clinical CTG second-reader. Balanced accuracy and macro-F1
+          correct for the 81/12/7% class imbalance. High-risk recall and FNR capture the most dangerous
+          miss type. AUPRC beats AUROC for imbalanced high-risk detection. ECE and Brier score measure
+          calibration — does 80% confidence actually mean 80% correct? Uncertainty coverage shows
+          whether the uncertainty flag catches dangerous misses.
+        </p>
+        <div className="rn-hl-grid">
+          {[
+            { label: 'Balanced Accuracy', val: ens.balanced_accuracy,                                          ci: boot.balanced_accuracy, thr: 0.70, inv: false, desc: 'Average recall per class — corrects for 81/12/7% imbalance' },
+            { label: 'Macro-F1',          val: ens.macro_f1,                                                   ci: boot.macro_f1,          thr: 0.55, inv: false, desc: 'Equal-weighted F1 across Low Risk / Watch / High Risk' },
+            { label: 'High-Risk Recall',  val: ens.high_risk_recall,                                           ci: boot.high_risk_recall,  thr: 0.80, inv: false, desc: 'Fraction of true high-risk cases found — the most critical clinical metric' },
+            { label: 'High-Risk FNR',     val: ens.high_risk_recall != null ? 1 - ens.high_risk_recall : null, ci: null,                   thr: 0.20, inv: true,  desc: 'False-negative rate for high-risk: cases missed entirely (lower = safer)' },
+            { label: 'Watch Recall',      val: ens.watch_recall,                                               ci: null,                   thr: 0.65, inv: false, desc: 'Watch-closely cases correctly identified — borderline cases matter too' },
+            { label: 'High-Risk AUPRC',   val: AUPRC,                                                          ci: boot.auprc_binary,      thr: 0.40, inv: false, desc: 'Precision-recall AUC — more informative than AUROC for imbalanced detection' },
+            { label: 'ECE',               val: (R.ece ?? null) as number | null,                               ci: null,                   thr: 0.10, inv: true,  desc: 'Expected calibration error — lower means probabilities match observed frequencies' },
+            { label: 'Brier Score',       val: (R.brier_score ?? null) as number | null,                       ci: null,                   thr: 0.15, inv: true,  desc: 'Mean squared probability error — punishes confident wrong predictions' },
+            { label: 'Uncertainty Rate',  val: (R.uncertainty_coverage as any)?.uncertain_rate ?? null,         ci: null,                   thr: null,             desc: 'Fraction of cases the model flags as uncertain rather than committing' },
+          ].map(({ label, val, ci, thr, inv, desc }) => (
+            <div key={label} className="rn-hl-cell">
+              <div className="rn-hl-cell__label">{label}</div>
+              <div className={`rn-hl-cell__val ${thr != null ? badge(val as number, thr, inv ?? false) : ''}`}>
+                {val != null ? pct(val as number) : '—'}
+              </div>
+              {ci && (ci as any).ci_lo != null && (
+                <div className="rn-hl-cell__ci">
+                  95% CI [{fmt((ci as any).ci_lo)}, {fmt((ci as any).ci_hi)}]
+                </div>
+              )}
+              <div className="rn-hl-cell__desc">{desc}</div>
+            </div>
+          ))}
+        </div>
+        <div className="rn-note rn-note--clinical" style={{ marginTop: 14 }}>
+          <strong>Missing values (—):</strong> ECE, Brier score, and uncertainty coverage are computed
+          by the Python training pipeline. Run <code>python train_adaptive.py</code> to populate them.
+          All other values come from the current <code>ctu_reservenet_results.json</code>.
+        </div>
+      </section>
+
       {/* ── Headline Binary Metrics ───────────────────────────────────────── */}
       <section className="rn-card">
         <h3 className="rn-card__title">
@@ -279,6 +322,81 @@ export function ReserveNetPanel() {
         </section>
       )}
 
+      {/* ── Calibration Quality Metrics ──────────────────────────────────── */}
+      <section className="rn-card">
+        <h3 className="rn-card__title">Calibration &amp; Probability Quality</h3>
+        <p className="rn-note" style={{ marginBottom: 16 }}>
+          A clinical AI tool must not just classify correctly — its confidence scores must match
+          observed event rates. When it says "80% at-risk", roughly 80% of those cases should truly
+          be at risk. These three metrics each measure that from a different angle.
+        </p>
+        <div className="rn-hl-grid">
+          {[
+            { label: 'ECE',            val: (R.ece         ?? null) as number | null, desc: 'Expected calibration error — avg gap between stated and actual confidence. Lower is better. < 0.05 is excellent; < 0.10 is good.',  inv: true,  thr: 0.10 },
+            { label: 'Brier Score',    val: (R.brier_score ?? null) as number | null, desc: 'Mean squared probability error — penalises confident wrong answers. Lower is better. Perfect = 0; baseline (always-majority) ≈ 0.15.', inv: true,  thr: 0.15 },
+            { label: 'Log-Loss',       val: (R.log_loss    ?? null) as number | null, desc: 'Negative log-likelihood — harsh penalty for high-confidence misses. Lower is better. Perfect calibration ≈ 0.',                      inv: true,  thr: 0.50 },
+            { label: 'Temperature T',  val: (R.temperature_T ?? null) as number | null, desc: 'Platt / temperature scaling factor fit on validation set. T > 1 softens overconfident probabilities.',                             inv: false, thr: null  },
+          ].map(({ label, val, desc, inv, thr }) => (
+            <div key={label} className="rn-hl-cell">
+              <div className="rn-hl-cell__label">{label}</div>
+              <div className={`rn-hl-cell__val ${thr != null ? badge(val as number, thr, inv) : ''}`}>
+                {val != null ? fmt(val as number, 4) : '—'}
+              </div>
+              <div className="rn-hl-cell__desc">{desc}</div>
+            </div>
+          ))}
+        </div>
+        {(R.ece == null && R.brier_score == null) && (
+          <div className="rn-note" style={{ marginTop: 10 }}>
+            ECE, Brier score, and log-loss are computed by the Python training pipeline.
+            Run <code>python train_adaptive.py</code> to populate these values.
+          </div>
+        )}
+      </section>
+
+      {/* ── Uncertainty Coverage ──────────────────────────────────────────── */}
+      <section className="rn-card">
+        <h3 className="rn-card__title">Uncertainty Coverage — Selective Prediction</h3>
+        <p className="rn-note" style={{ marginBottom: 16 }}>
+          FetalyzeAI flags cases where its confidence is low. These metrics measure whether that flag
+          is clinically useful: does accuracy improve when the model only predicts on confident cases?
+          Does the uncertainty flag catch dangerous misses that would otherwise slip through?
+        </p>
+        {(R.uncertainty_coverage as any) ? (
+          <div className="rn-hl-grid">
+            {[
+              { label: 'Uncertain Rate',         val: (R.uncertainty_coverage as any).uncertain_rate,             desc: 'Fraction of all cases flagged as uncertain — not committed to a prediction' },
+              { label: 'Accuracy (confident)',   val: (R.uncertainty_coverage as any).confident_accuracy,         desc: 'Overall accuracy restricted to cases the model is confident about' },
+              { label: 'HR Recall (confident)',  val: (R.uncertainty_coverage as any).high_risk_recall_confident, desc: 'High-risk recall on the confident subset — safety metric for committed predictions' },
+              { label: 'HR Cases → Uncertain',   val: (R.uncertainty_coverage as any).high_risk_flagged_uncertain, desc: 'Fraction of true high-risk cases caught by the uncertainty flag (a safety net)' },
+            ].map(({ label, val, desc }) => (
+              <div key={label} className="rn-hl-cell">
+                <div className="rn-hl-cell__label">{label}</div>
+                <div className="rn-hl-cell__val">{val != null ? pct(val as number) : '—'}</div>
+                <div className="rn-hl-cell__desc">{desc}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <>
+            <div className="rn-note">
+              Uncertainty coverage statistics will appear here after training.
+              Run <code>python train_adaptive.py</code> — the pipeline computes uncertain_rate,
+              confident_accuracy, and high_risk_flagged_uncertain automatically.
+            </div>
+            <div className="rn-hl-grid" style={{ marginTop: 12 }}>
+              {['Uncertain Rate','Accuracy (confident)','HR Recall (confident)','HR Cases → Uncertain'].map(l => (
+                <div key={l} className="rn-hl-cell">
+                  <div className="rn-hl-cell__label">{l}</div>
+                  <div className="rn-hl-cell__val">—</div>
+                  <div className="rn-hl-cell__desc">Populated after training</div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </section>
+
       {/* ── Score Distribution Histogram ─────────────────────────────────── */}
       {shist.length > 0 && (
         <section className="rn-card">
@@ -420,6 +538,25 @@ export function ReserveNetPanel() {
           Inner validation split used for per-fold Youden threshold tuning. The CV mean gives
           the most reliable out-of-sample estimate at this dataset size.
         </p>
+        {/* Priority CV summary — spec §22 */}
+        <div style={{ background: '#f0f9ff', borderRadius: 8, padding: 14, marginBottom: 16, border: '1px solid #bae6fd' }}>
+          <div style={{ fontWeight: 600, fontSize: 13, color: '#0369a1', marginBottom: 10 }}>Spec-Required CV Mean ± Std</div>
+          <div className="rn-cv-metrics">
+            {[
+              { label: 'Balanced Accuracy', mean: cv.mean_balanced_accuracy, std: cv.std_balanced_accuracy },
+              { label: 'Macro-F1',          mean: cv.mean_macro_f1,          std: cv.std_macro_f1          },
+              { label: 'High-Risk Recall',  mean: cv.mean_high_risk_recall,  std: cv.std_high_risk_recall  },
+              { label: 'ECE',               mean: cv.mean_ece,               std: cv.std_ece               },
+            ].map(m => (
+              <div key={m.label} className="rn-cv-metric">
+                <span className="rn-cv-metric__val">{m.mean != null ? pct(m.mean) : '—'}</span>
+                <span className="rn-cv-metric__sd">± {m.std != null ? pct(m.std) : '—'}</span>
+                <span className="rn-cv-metric__lab">{m.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
         <div className="rn-cv-metrics">
           {[
             { label: 'AUROC',       mean: cv.mean_auroc, std: cv.std_auroc },
@@ -438,26 +575,30 @@ export function ReserveNetPanel() {
         <div className="rn-table-wrap">
           <table className="rn-table">
             <thead>
-              <tr><th>Fold</th><th>AUROC</th><th>Sensitivity</th><th>Specificity</th><th>F1</th><th>Precision</th></tr>
+              <tr><th>Fold</th><th>AUROC</th><th>Bal. Acc</th><th>Macro-F1</th><th>HR Recall</th><th>Sensitivity</th><th>Specificity</th><th>F1</th></tr>
             </thead>
             <tbody>
               {(cv.fold_auroc ?? []).map((auc: number, i: number) => (
                 <tr key={i}>
                   <td className="rn-table__fold">Fold {i + 1}</td>
                   <td>{fmt(auc)}</td>
+                  <td>{cv.fold_balanced_accuracy?.[i] != null ? pct(cv.fold_balanced_accuracy[i]) : '—'}</td>
+                  <td>{cv.fold_macro_f1?.[i] != null ? fmt(cv.fold_macro_f1[i]) : '—'}</td>
+                  <td>{cv.fold_high_risk_recall?.[i] != null ? pct(cv.fold_high_risk_recall[i]) : '—'}</td>
                   <td>{pct(cv.fold_sens?.[i])}</td>
                   <td>{pct(cv.fold_spec?.[i])}</td>
                   <td>{fmt(cv.fold_f1?.[i])}</td>
-                  <td>{pct(cv.fold_prec?.[i])}</td>
                 </tr>
               ))}
               <tr className="rn-table__mean">
                 <td>Mean ± SD</td>
                 <td>{fmt(cv.mean_auroc)} ± {fmt(cv.std_auroc)}</td>
+                <td>{cv.mean_balanced_accuracy != null ? `${pct(cv.mean_balanced_accuracy)} ± ${pct(cv.std_balanced_accuracy)}` : '—'}</td>
+                <td>{cv.mean_macro_f1 != null ? `${fmt(cv.mean_macro_f1)} ± ${fmt(cv.std_macro_f1)}` : '—'}</td>
+                <td>{cv.mean_high_risk_recall != null ? `${pct(cv.mean_high_risk_recall)} ± ${pct(cv.std_high_risk_recall)}` : '—'}</td>
                 <td>{pct(cv.mean_sens)} ± {pct(cv.std_sens)}</td>
                 <td>{pct(cv.mean_spec)} ± {pct(cv.std_spec)}</td>
                 <td>{fmt(cv.mean_f1)} ± {fmt(cv.std_f1)}</td>
-                <td>{pct(cv.mean_prec)} ± {pct(cv.std_prec)}</td>
               </tr>
             </tbody>
           </table>
@@ -564,6 +705,128 @@ export function ReserveNetPanel() {
               </div>
             )
           })}
+        </div>
+      </section>
+
+      {/* ── CTG-Specific Validation ───────────────────────────────────────── */}
+      <section className="rn-card">
+        <h3 className="rn-card__title">CTG-Specific Clinical Validation</h3>
+        <p className="rn-note" style={{ marginBottom: 16 }}>
+          These sections validate the three custom FetalyzeAI clinical features: Fetal Reserve Score
+          (FRS), Deceleration Burden Index (DBI), and Contraction Stress Response (CSR). For a sound
+          clinical AI, these features should correlate with pH and discriminate risk classes.
+          Results are populated when training writes <code>ctg_specific</code> into the results JSON.
+        </p>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
+
+          {/* FRS vs pH */}
+          <div style={{ background: '#f8faff', borderRadius: 8, padding: 16, border: '1px solid #e0e7ff' }}>
+            <div style={{ fontWeight: 700, color: '#3b82f6', marginBottom: 8, fontSize: 14 }}>Fetal Reserve Score vs pH</div>
+            <p className="rn-note" style={{ marginBottom: 12 }}>FRS should correlate negatively with pH — lower reserve → worse outcome.</p>
+            {(R.ctg_specific as any)?.frs_vs_ph ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {[
+                  { label: 'Spearman r (FRS–pH)', val: (R.ctg_specific as any).frs_vs_ph.spearman_r },
+                  { label: 'Pearson r (FRS–pH)',  val: (R.ctg_specific as any).frs_vs_ph.pearson_r  },
+                  { label: 'AUC (low FRS → HR)',  val: (R.ctg_specific as any).frs_vs_ph.auc        },
+                ].map(({ label, val }) => (
+                  <div key={label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+                    <span style={{ color: '#374151' }}>{label}</span>
+                    <strong style={{ color: '#1e40af' }}>{val != null ? fmt(val as number, 3) : '—'}</strong>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rn-note">Run training to populate FRS vs pH correlations.</div>
+            )}
+          </div>
+
+          {/* DBI by class */}
+          <div style={{ background: '#fff8f0', borderRadius: 8, padding: 16, border: '1px solid #fde68a' }}>
+            <div style={{ fontWeight: 700, color: '#d97706', marginBottom: 8, fontSize: 14 }}>Deceleration Burden Index by Class</div>
+            <p className="rn-note" style={{ marginBottom: 12 }}>Higher DBI should correlate with worse risk class and lower pH.</p>
+            {(R.ctg_specific as any)?.dbi_by_class ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {[
+                  { label: 'Low Risk — mean DBI',   val: (R.ctg_specific as any).dbi_by_class.low_risk,   color: '#16a34a' },
+                  { label: 'Watch — mean DBI',       val: (R.ctg_specific as any).dbi_by_class.watch,      color: '#d97706' },
+                  { label: 'High Risk — mean DBI',   val: (R.ctg_specific as any).dbi_by_class.high_risk,  color: '#dc2626' },
+                  { label: 'AUC (DBI → high-risk)',  val: (R.ctg_specific as any).dbi_by_class.auc,        color: '#374151' },
+                  { label: 'Corr. with pH',          val: (R.ctg_specific as any).dbi_by_class.corr_ph,    color: '#374151' },
+                ].map(({ label, val, color }) => (
+                  <div key={label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+                    <span style={{ color: '#374151' }}>{label}</span>
+                    <strong style={{ color }}>{val != null ? fmt(val as number, 3) : '—'}</strong>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rn-note">Run training to populate DBI-by-class validation.</div>
+            )}
+          </div>
+
+          {/* CSR by class */}
+          <div style={{ background: '#f0fff4', borderRadius: 8, padding: 16, border: '1px solid #bbf7d0' }}>
+            <div style={{ fontWeight: 700, color: '#16a34a', marginBottom: 8, fontSize: 14 }}>Contraction Stress Response by Class</div>
+            <p className="rn-note" style={{ marginBottom: 12 }}>Higher CSR (delayed recovery) should track with worse outcomes.</p>
+            {(R.ctg_specific as any)?.csr_by_class ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {[
+                  { label: 'Low Risk — mean CSR',      val: (R.ctg_specific as any).csr_by_class.low_risk,            color: '#16a34a' },
+                  { label: 'Watch — mean CSR',          val: (R.ctg_specific as any).csr_by_class.watch,               color: '#d97706' },
+                  { label: 'High Risk — mean CSR',      val: (R.ctg_specific as any).csr_by_class.high_risk,           color: '#dc2626' },
+                  { label: 'Avg recovery (s) — Low',    val: (R.ctg_specific as any).csr_by_class.recovery_low_s,      color: '#16a34a' },
+                  { label: 'Avg recovery (s) — High',   val: (R.ctg_specific as any).csr_by_class.recovery_high_s,     color: '#dc2626' },
+                  { label: 'AUC (CSR → high-risk)',     val: (R.ctg_specific as any).csr_by_class.auc,                 color: '#374151' },
+                  { label: 'Corr. with pH',             val: (R.ctg_specific as any).csr_by_class.corr_ph,             color: '#374151' },
+                ].map(({ label, val, color }) => (
+                  <div key={label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+                    <span style={{ color: '#374151' }}>{label}</span>
+                    <strong style={{ color }}>{val != null ? fmt(val as number, 3) : '—'}</strong>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rn-note">Run training to populate CSR-by-class validation.</div>
+            )}
+          </div>
+
+        </div>
+
+        {/* Signal quality subgroups */}
+        <div style={{ marginTop: 20 }}>
+          <div style={{ fontWeight: 700, color: '#374151', marginBottom: 10, fontSize: 14 }}>Signal Quality Subgroup Performance</div>
+          <p className="rn-note" style={{ marginBottom: 12 }}>
+            Performance split by signal quality (good / acceptable / poor). A robust model should become
+            more uncertain — not overconfident — when signal is noisy. Poor-signal accuracy drop is expected;
+            a rising uncertainty rate confirms the model is self-aware about data quality.
+          </p>
+          {(R.signal_quality_subgroups as any) ? (
+            <div className="rn-table-wrap">
+              <table className="rn-table">
+                <thead>
+                  <tr><th>Signal Quality</th><th>N</th><th>Accuracy</th><th>High-Risk Recall</th><th>Uncertainty Rate</th></tr>
+                </thead>
+                <tbody>
+                  {(['good','acceptable','poor'] as const).map(group => {
+                    const g = (R.signal_quality_subgroups as any)[group]
+                    return g ? (
+                      <tr key={group}>
+                        <td><span className={`rn-class-pill rn-class-pill--${group === 'good' ? 'normal' : group === 'acceptable' ? 'watch' : 'high'}`}>{group.charAt(0).toUpperCase() + group.slice(1)}</span></td>
+                        <td>{g.n ?? '—'}</td>
+                        <td className={g.accuracy >= 0.80 ? 'rn-td--good' : g.accuracy >= 0.60 ? 'rn-td--warn' : 'rn-td--bad'}>{pct(g.accuracy)}</td>
+                        <td className={g.high_risk_recall >= 0.75 ? 'rn-td--good' : g.high_risk_recall >= 0.50 ? 'rn-td--warn' : 'rn-td--bad'}>{pct(g.high_risk_recall)}</td>
+                        <td>{pct(g.uncertainty_rate)}</td>
+                      </tr>
+                    ) : null
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="rn-note">Signal quality subgroup performance will appear here after training. Run <code>python train_adaptive.py</code>.</div>
+          )}
         </div>
       </section>
 
