@@ -446,7 +446,7 @@ function buildFactorRows(result: PredictionResult, _riskColor: string) {
     .sort((a, b) => b.percent - a.percent)
 }
 
-function hash(value: string) {
+function _hash(value: string) {
   let h = 0
   for (let i = 0; i < value.length; i += 1) {
     h = (Math.imul(31, h) + value.charCodeAt(i)) | 0

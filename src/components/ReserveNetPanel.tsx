@@ -76,7 +76,7 @@ export function ReserveNetPanel() {
   const holdout = R.holdout_test ?? {}
   const nEval = hl.n_eval ?? hl.n_test ?? 552
   const nAtRisk = hl.n_atrisk_eval ?? hl.n_atrisk_test ?? 113
-  const passEs = (v:number|null|undefined, t=0.89) => v != null && v >= t
+  const _passEs = (v:number|null|undefined, t=0.89) => v != null && v >= t; void _passEs;
 
   return (
     <div className="rn">

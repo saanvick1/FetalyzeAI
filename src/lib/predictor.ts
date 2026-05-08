@@ -67,7 +67,7 @@ function expertB(f: FeatureValues): [number, number, number] {
   const stv     = f.stv
   const ltv     = f.ltv
   const stvNorm = f.stv_norm  // 0–1
-  const ltvNorm = f.ltv_norm  // 0–1
+  const _ltvNorm = f.ltv_norm; void _ltvNorm  // 0–1
 
   // STV (FIGO: absent <0.5, reduced 0.5–1, normal 1–4, saltatory >6)
   const stv_n = stv >= 1.0 && stv <= 4.0 ? 3.5 : stv >= 0.5 ? -0.5 : -5.0
@@ -93,13 +93,13 @@ function expertB(f: FeatureValues): [number, number, number] {
 // ── Expert C — Event Patterns ──────────────────────────────────────────────
 // Decelerations, accelerations, late-decel, contraction stress response
 function expertC(f: FeatureValues): [number, number, number] {
-  const nDecels     = f.n_decels
+  const _nDecels    = f.n_decels; void _nDecels
   const decRate     = f.decels_per_30min
   const meanDepth   = f.mean_decel_depth
   const maxDepth    = f.max_decel_depth
   const prolonged   = f.prolonged_decel_flag      // 0 or 1
   const lateLikely  = f.late_decel_likelihood     // 0–1
-  const nAccels     = f.n_accels
+  const _nAccels    = f.n_accels; void _nAccels
   const accelRate   = f.accels_per_30min
   const delayed     = f.delayed_recovery_score    // 0–1
   const fhrDrop     = f.mean_fhr_drop_post_uc     // bpm
@@ -129,7 +129,7 @@ function expertC(f: FeatureValues): [number, number, number] {
   const acc_h = accelRate < 0.5 ? 2.5 : accelRate < 1 ? 1.0 : -2.0
 
   // Delayed recovery (contraction stress response)
-  const del_n = delayed < 0.10 ? 1.0 : delayed < 0.30 ? -0.5 : -2.5
+  const _del_n = delayed < 0.10 ? 1.0 : delayed < 0.30 ? -0.5 : -2.5; void _del_n
   const del_w = delayed >= 0.20 && delayed < 0.50 ? 2.0 : 0.0
   const del_h = delayed >= 0.60 ? 3.5 : delayed >= 0.40 ? 2.0 : -0.5
 
@@ -221,7 +221,7 @@ function reserveFusion(
 }
 
 // ── Build clinical explanations ────────────────────────────────────────────
-function buildExplanations(f: FeatureValues, expertProbs: number[][]): string[] {
+function buildExplanations(f: FeatureValues, _expertProbs: number[][]): string[] {
   const expl: string[] = []
 
   // Expert B — Variability (top CTU feature group)

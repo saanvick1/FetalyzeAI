@@ -353,7 +353,7 @@ function DoctorGraphs({ result }: { result: PredictionResult }) {
           <DialChart
             value={Math.round(result.confidence * 100)}
             label="Model Confidence"
-            color={result.uncertainty === 'low' ? '#16a34a' : result.uncertainty === 'medium' ? '#d97706' : '#dc2626'}
+            color={result.uncertainty === 'low' ? '#16a34a' : result.uncertainty === 'moderate' ? '#d97706' : '#dc2626'}
             footer={`${result.uncertainty.toUpperCase()} uncertainty`}
           />
           <DialChart
@@ -430,7 +430,7 @@ function DoctorGraphs({ result }: { result: PredictionResult }) {
             label: 'Confidence',
             value: `${(result.confidence * 100).toFixed(0)}`,
             units: '%',
-            status: result.uncertainty === 'low' ? 'normal' : result.uncertainty === 'medium' ? 'watch' : 'high',
+            status: result.uncertainty === 'low' ? 'normal' : result.uncertainty === 'moderate' ? 'watch' : 'high',
             good: '≥ 70%',
           },
           {
