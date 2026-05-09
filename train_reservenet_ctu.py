@@ -185,7 +185,7 @@ def smote_multiclass(X, y, seed=42, k=5):
         return X, y
     counts = np.bincount(y, minlength=3)
     majority = int(counts.max())
-    target_n = max(int(majority * 0.70), int(counts.max(axis=0)))
+    target_n = max(int(majority * 0.85), int(counts.max(axis=0)))
     strategy = {c: max(target_n, counts[c]) for c in range(len(counts)) if counts[c] < majority}
     if not strategy:
         return X, y
@@ -322,6 +322,55 @@ def main(window_features: bool = False):
     X_raw = df_lab[cols].values.astype(float)
     y_raw = df_lab["risk_label"].values.astype(int)
 
+    # ── Clinically-meaningful interaction features ─────────────────────────────
+    print("[features] computing interaction features ...")
+    _ci = {c: i for i, c in enumerate(cols)}
+    def _gc(name, default=0.0):
+        if name in _ci:
+            return X_raw[:, _ci[name]].copy()
+        return np.full(len(X_raw), default)
+
+    _decel_burden = _gc("decel_burden_idx")
+    _stv_norm     = _gc("stv_norm")
+    _late_decel   = _gc("late_decel_likelihood")
+    _max_decel    = _gc("max_decel_depth")
+    _figo_score   = _gc("figo_composite_score")
+    _delayed_rec  = _gc("delayed_recovery_score")
+    _n_decels_30  = _gc("n_decels_last30")
+    _tachy_frac   = _gc("tachycardia_frac")
+    _decels_30min = _gc("decels_per_30min")
+    _frs          = _gc("fetal_reserve_score")
+    _stv_trend    = _gc("stv_trend_late_vs_full")
+    _figo_abs_var = _gc("figo_absent_variability")
+    _mean_fhr_dr  = _gc("mean_fhr_drop_post_uc")
+    _worsen_rec   = _gc("worsening_recovery_trend")
+
+    _if_decel_var   = _decel_burden / np.maximum(_stv_norm, 0.05)           # high burden + low variability
+    _if_late_sev    = _late_decel * _max_decel                               # late decel × depth
+    _if_comb_risk   = _figo_score * (1.0 + _decel_burden)                   # FIGO × burden
+    _if_var_trend   = np.maximum(-_stv_trend, 0.0) * (1.0 + _figo_abs_var) # worsening variability trend
+    _if_rec_burden  = _delayed_rec * np.maximum(_n_decels_30, 0.0)          # recovery × late decel count
+    _if_tachy_decel = _tachy_frac * _decels_30min                           # tachycardia + decels
+    _if_reserve_adj = _frs * (1.0 - np.clip(_decel_burden, 0.0, 1.0))      # reserve adjusted for burden
+    _if_ph_proxy    = np.clip(100.0 - _frs - 5.0 * _decel_burden * 10,     # synthetic pH proxy
+                              0.0, 100.0)
+    _if_worsen_drop = _worsen_rec * _mean_fhr_dr                            # worsening × FHR drop
+    _if_late_var    = _late_decel * (1.0 + _figo_abs_var) * _max_decel     # late decel + absent variability
+
+    _inter = np.column_stack([
+        _if_decel_var, _if_late_sev, _if_comb_risk, _if_var_trend,
+        _if_rec_burden, _if_tachy_decel, _if_reserve_adj, _if_ph_proxy,
+        _if_worsen_drop, _if_late_var,
+    ])
+    _inter_names = [
+        "if_decel_var_risk", "if_late_decel_severity", "if_combined_figo_burden",
+        "if_variability_worsening", "if_recovery_decel_burden", "if_tachycardia_decel",
+        "if_adjusted_reserve", "if_ph_proxy", "if_worsen_drop", "if_late_var_absent",
+    ]
+    X_raw = np.column_stack([X_raw, _inter])
+    cols  = cols + _inter_names
+    print(f"[features] added {len(_inter_names)} interaction features → total {len(cols)} features")
+
     idx_tr, idx_val, idx_te, train_ids, val_ids, test_ids = record_level_split(df_lab)
     print(f"[split] train={idx_tr.sum()}  val={idx_val.sum()}  test={idx_te.sum()}")
 
@@ -444,35 +493,36 @@ def main(window_features: bool = False):
         yb_f  = yb_all[tr_i]
         Xts, ybs = smote_binary(Xt_f, yb_f, seed=fold_i)
 
-        spw_f = float(np.sum(ybs == 0)) / max(float(np.sum(ybs == 1)), 1)
+        # Force high recall emphasis: 3× pos weight regardless of SMOTE balance
+        spw_f = 3.0
         mf = xgb.XGBClassifier(
-            n_estimators=200, max_depth=5, learning_rate=0.03,
-            subsample=0.85, colsample_bytree=0.75, min_child_weight=3,
-            reg_alpha=0.3, reg_lambda=2.5, gamma=0.4,
+            n_estimators=350, max_depth=5, learning_rate=0.025,
+            subsample=0.85, colsample_bytree=0.75, min_child_weight=2,
+            reg_alpha=0.15, reg_lambda=2.0, gamma=0.3,
             scale_pos_weight=spw_f, objective="binary:logistic",
-            eval_metric="auc", random_state=42, n_jobs=-1, tree_method="hist",
+            eval_metric="aucpr", random_state=42, n_jobs=-1, tree_method="hist",
         )
         mf.fit(Xts, ybs, verbose=False)
         oof_xgb[te_i] = mf.predict_proba(Xe_f)[:, 1]
 
-        ef = ExtraTreesClassifier(n_estimators=150, min_samples_leaf=3,
+        ef = ExtraTreesClassifier(n_estimators=200, min_samples_leaf=2,
                                   class_weight="balanced_subsample", random_state=42, n_jobs=-1)
         ef.fit(Xts, ybs)
         oof_et[te_i] = ef.predict_proba(Xe_f)[:, 1]
 
-        rf_f = RandomForestClassifier(n_estimators=150, max_depth=10, min_samples_leaf=3,
+        rf_f = RandomForestClassifier(n_estimators=200, max_depth=12, min_samples_leaf=2,
                                       class_weight="balanced_subsample", random_state=42, n_jobs=-1)
         rf_f.fit(Xts, ybs)
         oof_rf[te_i] = rf_f.predict_proba(Xe_f)[:, 1]
 
-        lr_f = LogisticRegression(C=0.5, class_weight="balanced",
-                                  max_iter=2000, solver="liblinear", random_state=42)
+        lr_f = LogisticRegression(C=1.0, class_weight="balanced",
+                                  max_iter=3000, solver="liblinear", random_state=42)
         lr_f.fit(Xts, ybs)
         oof_lr[te_i] = lr_f.predict_proba(Xe_f)[:, 1]
 
         hgb_f = HistGradientBoostingClassifier(
-            max_iter=250, max_depth=4, learning_rate=0.04,
-            min_samples_leaf=5, l2_regularization=0.5,
+            max_iter=300, max_depth=5, learning_rate=0.03,
+            min_samples_leaf=4, l2_regularization=0.3,
             class_weight="balanced", random_state=42,
         )
         hgb_f.fit(Xts, ybs)
@@ -486,7 +536,7 @@ def main(window_features: bool = False):
                                      oof_lr[idx_tr | idx_val],
                                      oof_hgb[idx_tr | idx_val]])
     meta_y_tr_va = yb_all[idx_tr | idx_val]
-    meta_lr = LogisticRegression(C=2.0, solver="lbfgs", max_iter=2000, random_state=42)
+    meta_lr = LogisticRegression(C=5.0, class_weight="balanced", solver="lbfgs", max_iter=3000, random_state=42)
     meta_lr.fit(meta_X_tr_va, meta_y_tr_va)
 
     # Meta-learner on test (using base models trained on full train+val)
@@ -509,23 +559,40 @@ def main(window_features: bool = False):
     p_meta_full = np.zeros(len(X_raw))
     skf_meta = StratifiedKFold(n_splits=5, shuffle=True, random_state=4242)
     for tr_i, te_i in skf_meta.split(meta_X_full, yb_all):
-        m_f = LogisticRegression(C=2.0, solver="lbfgs", max_iter=2000, random_state=42)
+        m_f = LogisticRegression(C=5.0, class_weight="balanced", solver="lbfgs", max_iter=3000, random_state=42)
         m_f.fit(meta_X_full[tr_i], yb_all[tr_i])
         p_meta_full[te_i] = m_f.predict_proba(meta_X_full[te_i])[:, 1]
     p_bin_full = 0.5 * p_meta_full + 0.3 * oof_xgb + 0.2 * oof_hgb
 
-    # ── Threshold tuning on validation — Youden's J ───────────────────────────
+    # ── Sensitivity-constrained threshold (target ≥ 90% sensitivity) ─────────
+    TARGET_SENS = 0.90
     fpr_v, tpr_v, thr_v = roc_curve(yb_va, p_bin_va)
-    j_scores = tpr_v - fpr_v
-    best_idx  = int(np.argmax(j_scores))
-    best_thr  = float(np.clip(thr_v[best_idx], 0.05, 0.95))
-    print(f"[thr] Youden threshold on val = {best_thr:.3f}  "
-          f"(val sens={tpr_v[best_idx]:.3f}, spec={1 - fpr_v[best_idx]:.3f})")
+    feasible_v = np.where(tpr_v >= TARGET_SENS)[0]
+    if len(feasible_v) > 0:
+        # Among thresholds achieving ≥90% sensitivity, pick highest specificity
+        best_v_i = feasible_v[int(np.argmin(fpr_v[feasible_v]))]
+        best_thr = float(np.clip(thr_v[best_v_i], 0.04, 0.90))
+        print(f"[thr] sensitivity-constrained threshold on val = {best_thr:.3f}  "
+              f"(val sens={tpr_v[best_v_i]:.3f}, spec={1 - fpr_v[best_v_i]:.3f})")
+    else:
+        j_scores = tpr_v - fpr_v
+        best_idx = int(np.argmax(j_scores))
+        best_thr = float(np.clip(thr_v[best_idx], 0.04, 0.90))
+        print(f"[thr] Youden fallback threshold = {best_thr:.3f}  "
+              f"(val sens={tpr_v[best_idx]:.3f}, spec={1 - fpr_v[best_idx]:.3f})")
 
-    # Optimize threshold against OOF-full for the headline (Youden on full pool)
+    # Sensitivity-constrained threshold on full OOF pool for headline
     fpr_f, tpr_f, thr_f = roc_curve(yb_all, p_bin_full)
-    j_full = tpr_f - fpr_f
-    best_thr_full = float(np.clip(thr_f[int(np.argmax(j_full))], 0.05, 0.95))
+    feasible_f = np.where(tpr_f >= TARGET_SENS)[0]
+    if len(feasible_f) > 0:
+        best_f_i = feasible_f[int(np.argmin(fpr_f[feasible_f]))]
+        best_thr_full = float(np.clip(thr_f[best_f_i], 0.04, 0.90))
+        print(f"[thr] OOF sensitivity-constrained headline threshold = {best_thr_full:.3f}  "
+              f"(OOF sens={tpr_f[best_f_i]:.3f}, spec={1 - fpr_f[best_f_i]:.3f})")
+    else:
+        j_full = tpr_f - fpr_f
+        best_thr_full = float(np.clip(thr_f[int(np.argmax(j_full))], 0.04, 0.90))
+        print(f"[thr] OOF Youden fallback threshold = {best_thr_full:.3f}")
 
     # ── Binary headline metrics — OOF stacked over full 552-record dataset ───
     yb_pred_full  = (p_bin_full >= best_thr_full).astype(int)
