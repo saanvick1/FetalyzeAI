@@ -4,6 +4,7 @@ import { PredictionForm } from './components/PredictionForm'
 import { ResultPanel } from './components/ResultPanel'
 import { HistoryPanel } from './components/HistoryPanel'
 import { DisclaimerBanner } from './components/DisclaimerBanner'
+import { ModelPerformancePanel } from './components/ModelPerformancePanel'
 import { predict, type PredictionResult } from './lib/api'
 import { DEFAULT_VALUES, type FeatureValues } from './lib/features'
 import { supabase } from './lib/supabase'
@@ -29,7 +30,7 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [history, setHistory] = useState<HistoryEntry[]>([])
-  const [activeTab, setActiveTab] = useState<'predict' | 'history'>('predict')
+  const [activeTab, setActiveTab] = useState<'predict' | 'history' | 'performance'>('predict')
   const sessionId = getSessionId()
 
   const handlePredict = useCallback(async () => {
@@ -82,6 +83,7 @@ export default function App() {
       <div className="app__tabs">
         <button className={`app__tab ${activeTab === 'predict' ? 'app__tab--active' : ''}`} onClick={() => setActiveTab('predict')}>CTG Analysis</button>
         <button className={`app__tab ${activeTab === 'history' ? 'app__tab--active' : ''}`} onClick={() => setActiveTab('history')}>History{history.length > 0 && <span className="app__tab-badge">{history.length}</span>}</button>
+        <button className={`app__tab ${activeTab === 'performance' ? 'app__tab--active' : ''}`} onClick={() => setActiveTab('performance')}>Model Performance</button>
       </div>
 
       <main className="app__main">
@@ -90,12 +92,14 @@ export default function App() {
             <PredictionForm values={values} onChange={setValues} onSubmit={handlePredict} loading={loading} />
             <ResultPanel result={result} loading={loading} error={error} />
           </div>
-        ) : (
+        ) : activeTab === 'history' ? (
           <HistoryPanel history={history} onSelect={(entry) => {
             setValues(entry.features)
             setResult(entry)
             setActiveTab('predict')
           }} />
+        ) : (
+          <ModelPerformancePanel />
         )}
       </main>
     </div>
