@@ -4,8 +4,6 @@ import { PredictionForm } from './components/PredictionForm'
 import { ResultPanel } from './components/ResultPanel'
 import { HistoryPanel } from './components/HistoryPanel'
 import { DisclaimerBanner } from './components/DisclaimerBanner'
-import { ReserveNetPanel } from './components/ReserveNetPanel'
-import { ReserveNetPredictorPanel } from './components/ReserveNetPredictorPanel'
 import { predict, type PredictionResult } from './lib/api'
 import { DEFAULT_VALUES, type FeatureValues } from './lib/features'
 import { supabase } from './lib/supabase'
@@ -31,7 +29,7 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [history, setHistory] = useState<HistoryEntry[]>([])
-  const [activeTab, setActiveTab] = useState<'predict' | 'history' | 'reservenet' | 'reservenet-predict'>('predict')
+  const [activeTab, setActiveTab] = useState<'predict' | 'history'>('predict')
   const sessionId = getSessionId()
 
   const handlePredict = useCallback(async () => {
@@ -84,8 +82,6 @@ export default function App() {
       <div className="app__tabs">
         <button className={`app__tab ${activeTab === 'predict' ? 'app__tab--active' : ''}`} onClick={() => setActiveTab('predict')}>CTG Analysis</button>
         <button className={`app__tab ${activeTab === 'history' ? 'app__tab--active' : ''}`} onClick={() => setActiveTab('history')}>History{history.length > 0 && <span className="app__tab-badge">{history.length}</span>}</button>
-        <button className={`app__tab ${activeTab === 'reservenet' ? 'app__tab--active' : ''}`} onClick={() => setActiveTab('reservenet')}>Model Performance</button>
-        <button className={`app__tab ${activeTab === 'reservenet-predict' ? 'app__tab--active' : ''}`} onClick={() => setActiveTab('reservenet-predict')}>ReserveNet Predictor</button>
       </div>
 
       <main className="app__main">
@@ -94,16 +90,12 @@ export default function App() {
             <PredictionForm values={values} onChange={setValues} onSubmit={handlePredict} loading={loading} />
             <ResultPanel result={result} loading={loading} error={error} />
           </div>
-        ) : activeTab === 'history' ? (
+        ) : (
           <HistoryPanel history={history} onSelect={(entry) => {
             setValues(entry.features)
             setResult(entry)
             setActiveTab('predict')
           }} />
-        ) : activeTab === 'reservenet-predict' ? (
-          <ReserveNetPredictorPanel />
-        ) : (
-          <ReserveNetPanel />
         )}
       </main>
     </div>
